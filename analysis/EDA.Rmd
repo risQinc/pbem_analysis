@@ -1,0 +1,249 @@
+---
+title: "Exploratory Data Analysis"
+output: word_document
+---
+
+```{r}
+library(data.table)
+library(lubridate)
+library(sf)
+library(sp)
+library(lubridate)
+library(gridExtra)
+library(MASS)
+library(mgcv)
+library(Metrics)
+library(tictoc)
+library(stats)
+library(tidyverse)
+library(ggplot2)
+library(forecast)
+library(tictoc)
+library(stringr)
+library(mapdata)
+library(mapview)
+library(leaflet)
+library(dplyr)
+library(mde)
+```
+
+# 1. Tide Data
+
+```{r cars}
+tide_data <- readRDS('../data/raw/TideGauge_DailyData.rds')
+tide_data = as.data.table(tide_data)
+
+#Time Range 1: November 1, 1964 to November 1, 1966
+#Time Range 2: November 1997 to November 1999)
+
+relevant_tide_dat = tide_data[(AtlanticCity.datetimestamp <= '1999-11-01' & AtlanticCity.datetimestamp >= '1997-11-01' ) | 
+                                (AtlanticCity.datetimestamp >= '1964-11-01' & AtlanticCity.datetimestamp <= '1966-11-01')]
+
+# cape may sealevel
+# fort pulasaki sealevel
+# springmaid pier sealevel
+# charleston
+relevant_tide_dat$AtlanticCity.date = as.Date(relevant_tide_dat$AtlanticCity.date)
+meyer_tide_dat = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
+  group_by(AtlanticCity.date) %>% 
+  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
+
+setnames(meyer_tide_dat, 'AtlanticCity.date', 'date')
+meyer_tide_dat = as.data.table(meyer_tide_dat)[, time_range := ifelse(date > '1967-01-01', '1997 - 1999', '1964 - 1966')]
+
+# TIDE TS Plot
+ggplot(meyer_tide_dat, aes(x = date, y = avg_daily_sea_level))+
+  facet_wrap(~time_range, scales = "free_x", switch = 'x')+
+  geom_line()+
+  ggtitle('Reproducing Tide Data From Meyer et al')
+
+
+```
+
+# DISCHARGE (INFLOW) DATA
+
+## 2. Delaware River at Trenton
+
+
+```{r pressure, echo=FALSE}
+dr = read_delim("../data/raw/del_riv_trent.txt", delim = "\t", skip = 68, col_names = FALSE)  
+missingness = percent_missing(dr)
+head(missingness)
+```
+It appears that only columns 1, 2, 3, 28, and 29 contain non-null data. According to the codes in this text file, those column names correspond to 'agency_cd', 'site_no',	'date', 'Discharge, cubic feet per second (Mean)', and a "cd" value...)
+
+
+```{r}
+colnames(dr) <- c('agency_cd', 'site_no',	'date','missing_4', 'missing_5', 'missing_6', 'missing_7', 'missing_8', 'missing_9', 'missing_10', 'missing_11', 'missing_12', 'missing_13', 'missing_14', 'missing_15', 'missing_16', 'missing_17', 'missing_18', 'missing_19', 'missing_20', 'missing_21', 'missing_22', 'missing_23', 'missing_24', 'missing_25', 'missing_26', 'missing_27', 'avg_discharge_cfps', 'code', 'missing_30', 'missing_31', 'missing_32', 'missing_33', 'missing_34', 'missing_35', 'missing_36', 'missing_37', 'missing_38', 'missing_39', 'missing_40', 'missing_41', 'missing_42', 'missing_43', 'missing_44', 'missing_45', 'missing_46', 'missing_47', 'missing_48', 'missing_49', 'missing_50', 'missing_51', 'missing_52', 'missing_53', 'missing_54', 'missing_55', 'missing_56', 'missing_57', 'missing_58', 'missing_59', 'missing_60', 'missing_61', 'missing_62', 'missing_63', 'missing_64', 'missing_65', 'missing_66', 'missing_67', 'missing_68', 'missing_69', 'missing_70', 'missing_71', 'missing_72', 'missing_73', 'missing_74', 'missing_75')
+
+dr_clean = as.data.table(dr[, c('agency_cd', 'site_no',	'date', 'avg_discharge_cfps', 'code')])
+head(dr_clean)
+```
+
+```{r}
+dr_clean[, month := month(date)]
+ts_dr_flows = dr_clean %>% group_by(month) %>%
+  summarise(avg_inflow = mean(avg_discharge_cfps))
+
+ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*.023168))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  ylim(0,600)+
+  ggtitle('Average of Delaware River @ Trenton, 1950 - 2020')
+
+```
+
+
+```{r}
+ts_dr_flows = dr_clean[(date <= '1999-11-01' & date >= '1997-11-01' ) | 
+                                (date >= '1964-11-01' & date <= '1966-11-01')] %>% group_by(month) %>%
+  summarise(avg_inflow = mean(avg_discharge_cfps))
+
+ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*.023168))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  ylim(0,600)+
+  ggtitle('Average of Delaware River @ Trenton, 1965 to 1966 & 1998 - 1999')
+```
+
+
+```{r}
+head(dr_clean)
+```
+
+
+## 3. Schuylkill River
+
+```{r}
+sr <-  read_delim("../data/raw/skill_riv.txt", delim = "\t", skip = 50, col_names = FALSE)  
+
+missingness = percent_missing(sr)
+head(missingness)
+# only first 5 columns have have complete data
+```
+
+
+```{r}
+colnames(sr) <- c('agency_cd', 'site_no',	'date',  'avg_discharge_cfps', 'code', 'max_sc_mc_sie_p_cm_25c', 'na2', 'min_sc_mc_sie_p_cm_25c', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16', 'avg_temp_f', 'na17', 'avg_temp_c', 'na18', 'max_temp_c', 'na19', 'min_temp_c', 'na20')
+sr_clean = as.data.table(sr[, c('agency_cd', 'site_no',	'date',  'avg_discharge_cfps', 'code')])
+head(sr_clean)
+sr_clean[, month := month(date)]
+
+# our peak raes are march, theirs are in june
+# possible difference in data aggregation?
+ts_sr_flows = sr_clean %>% group_by(month) %>%
+  summarise(avg_inflow = mean(avg_discharge_cfps))
+
+ggplot(ts_sr_flows, aes(x = month, y = avg_inflow*.023168))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  ylim(0,600)+
+  ggtitle('Average of Schuylkill, 1950 - 2020')
+
+```
+
+```{r}
+#ts_dr_flows = dr_clean[(date <= '1999-11-01' & date >= '1997-11-01' ) | (date >= '1964-11-01' & date <= '1966-11-01')] %>% group_by(month) %>% summarise(avg_inflow = mean(avg_discharge_cfps))
+
+#ts_sr_flows = sr_clean#[(date <= '1999-11-01' & date >= '1997-11-01' ) | (date >= '1964-11-01' & date <= '1966-11-01')] %>% group_by(month) %>% summarise(avg_inflow = mean(avg_discharge_cfps))
+
+ts_dr_flows = dr_clean %>% group_by(month) %>% summarise(avg_inflow = mean(avg_discharge_cfps))
+ts_sr_flows = sr_clean %>% group_by(month) %>% summarise(avg_inflow = mean(avg_discharge_cfps))
+
+ts_sr_flows = ts_sr_flows %>% mutate(river = 'schuylkill')
+ts_dr_flows = ts_dr_flows %>% mutate(river = 'delaware')
+
+flows = rbind(ts_sr_flows, ts_dr_flows)
+
+
+
+ggplot(flows, aes(x = month, y = avg_inflow*.023168, fill = river))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  ylim(0,600)+
+ #ggtitle('Average of Monthly Flows, 1965 to 1966 & 1998 - 1999')
+ggtitle('Average of Monthly Flows, 1950 - 2020')
+
+```
+
+# SC DATA
+
+## 4. Chester
+```{r}
+chester <-  read_delim("../data/raw/chester_sc.txt", delim = "\t", skip = 50, col_names = FALSE)  
+missingness = percent_missing(chester)
+head(missingness)
+```
+
+Column 4 is max SC; columns 6 is min SC
+
+```{r}
+colnames(chester) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'na2', 'min_sc_mc_sie_p_cm_25c', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16', 'avg_temp_f', 'na17', 'avg_temp_c', 'na18', 'max_temp_c', 'na19')
+chester_clean = as.data.table(chester[, c('agency_cd', 'site_no',	'date',  'max_sc', 'min_sc')])
+head(chester_clean)
+
+
+```
+
+```{r}
+chester_clean = as.data.table(chester_clean)[, time_range := ifelse( (date <= '1999-11-01' & date >= '1997-11-01') , '1997 - 1999', 
+                                                             ifelse( (date >= '1964-11-01' & date <= '1966-11-01'), '1965 - 1966', 'non-relevant'))]
+
+
+chester_melt = melt(data = chester_clean, id.vars = c("agency_cd", "site_no", 'date', 'time_range', 'month'), measure.vars = c("max_sc", "min_sc"))
+setnames(chester_melt, 'variable', 'metric')
+setnames(chester_melt, 'value', 'sc')
+
+ggplot(chester_melt[time_range != 'non-relevant'], aes(x = date, y = sc, color = metric))+
+  facet_wrap(~time_range, scales = "free_x", switch = 'x')+
+  geom_line()+
+  ggtitle('SC at Chester')
+```
+                                             
+
+
+## 5. Reedy Island
+```{r}
+reedy <-  read_delim("../data/raw/reedy_island_sc.txt", delim = "\t", skip = 50, col_names = FALSE)  
+missingness = percent_missing(reedy)
+head(missingness)
+```
+
+Column 4 is max SC; column 6 is min SC; column 8 is average SC
+
+```{r}
+colnames(reedy) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'code', 'avg_sc', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16')
+reedy_clean = as.data.table(reedy[, c('agency_cd', 'site_no',	'date',  'max_sc', 'min_sc', 'avg_sc')])
+head(reedy_clean)
+
+```
+```{r}
+reedy_clean = as.data.table(reedy)[, time_range := ifelse( (date <= '1999-11-01' & date >= '1997-11-01') , '1997 - 1999', 
+                                                             ifelse( (date >= '1964-11-01' & date <= '1966-11-01'), '1965 - 1966', 'non-relevant'))]
+
+
+reedy_melt = melt(data = reedy_clean, id.vars = c("agency_cd", "site_no", 'date', 'time_range'), measure.vars = c("max_sc", "min_sc", 'avg_sc'))
+setnames(reedy_melt, 'variable', 'metric')
+setnames(reedy_melt, 'value', 'sc')
+
+ggplot(reedy_melt[time_range != 'non-relevant'], aes(x = date, y = sc, color = metric))+
+  facet_wrap(~time_range, scales = "free_x", switch = 'x')+
+  geom_line()+
+  ggtitle('SC at Reedy Island')
+```
+
+
+
+
+## 6. Ben Franklin Bridge -- missing SC Data?
+
+```{r}
+bfb <-  read_delim("../data/raw/ben_franklin_bridge_sc.txt", delim = "\t", skip = 50, col_names = FALSE)  
+missingness = percent_missing(bfb)
+head(missingness)
+```
+Columns 1,2,3, 18, 20, 24, 26 have data...
+
+```{r}
+colnames(bfb) <- c('agency_cd', 'site_no',	'date',  'avg_discharge_cfps', 'code', 'max_sc_mc_sie_p_cm_25c', 'na2', 'min_sc_mc_sie_p_cm_25c', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16', 'avg_temp_f', 'na17', 'avg_temp_c', 'na18', 'max_temp_c', 'na19', 'min_temp_c', 'na20')
+
+```
+
+See
+
