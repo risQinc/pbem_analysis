@@ -52,6 +52,10 @@ meyer_tide_dat = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_le
   group_by(AtlanticCity.date) %>% 
   summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
 
+meyer_tide_dat = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
+  group_by(AtlanticCity.date) %>% 
+  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
+
 setnames(meyer_tide_dat, 'AtlanticCity.date', 'date')
 meyer_tide_dat = as.data.table(meyer_tide_dat)[, time_range := ifelse(date > '1967-01-01', '1997 - 1999', '1964 - 1966')]
 
@@ -160,7 +164,7 @@ flows = rbind(ts_sr_flows, ts_dr_flows)
 
 
 
-ggplot(flows, aes(x = month, y = avg_inflow*.023168, fill = river))+
+ggplot(flows, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
  ggtitle('Average of Monthly Flows, 1965 to 1966 & 1998 - 1999')
@@ -200,7 +204,7 @@ chester_melt = melt(data = chester_clean, id.vars = c("agency_cd", "site_no", 'd
 setnames(chester_melt, 'variable', 'metric')
 setnames(chester_melt, 'value', 'sc')
 
-ggplot(chester_melt[time_range != 'non-relevant'], aes(x = date, y = sc, color = metric))+
+ggplot(chester_melt[time_range != 'non-relevant' & metric == 'mean_sc'], aes(x = date, y = sc, color = metric))+
   facet_wrap(~time_range, scales = "free_x", switch = 'x')+
   geom_line()+
   ggtitle('SC at Chester')
@@ -218,8 +222,8 @@ missingness = percent_missing(reedy)
 Column 4 is max SC; column 6 is min SC; column 8 is average SC
 
 ```{r, warning=FALSE, message=FALSE}
-colnames(reedy) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'code', 'avg_sc', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16')
-reedy_clean = as.data.table(reedy[, c('agency_cd', 'site_no',	'date',  'max_sc', 'min_sc', 'avg_sc')])
+colnames(reedy) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'code2', 'mean_sc', 'na3', 'avg_sc_mc_sie_p_cm_25c', 'na4', 'max_dis_o2', 'na5', 'min_dis_o2', 'na6', 'avg_dis_o2', 'na7', 'max_temp_c2', 'na8', 'min_temp_c2', 'na9', 'avg_temp_c2', 'na10', 'max_ph', 'na11', 'min_ph', 'na12', 'avg_sus_sed_conc', 'na13', 'avg_sus_sed_discharge', 'na14', 'max_temp_f', 'na15', 'min_temp_f', 'na16')
+reedy_clean = as.data.table(reedy[, c('agency_cd', 'site_no',	'date',  'max_sc', 'min_sc', 'mean_sc')])
 head(reedy_clean)
 
 ```
@@ -229,11 +233,11 @@ reedy_clean = as.data.table(reedy)[, time_range := ifelse( (date <= '1999-11-01'
                                                              ifelse( (date >= '1964-11-01' & date <= '1966-11-01'), '1965 - 1966', 'non-relevant'))]
 
 
-reedy_melt = melt(data = reedy_clean, id.vars = c("agency_cd", "site_no", 'date', 'time_range'), measure.vars = c("max_sc", "min_sc", 'avg_sc'))
+reedy_melt = melt(data = reedy_clean, id.vars = c("agency_cd", "site_no", 'date', 'time_range'), measure.vars = c("max_sc", "min_sc", 'mean_sc'))
 setnames(reedy_melt, 'variable', 'metric')
 setnames(reedy_melt, 'value', 'sc')
 
-ggplot(reedy_melt[time_range != 'non-relevant'], aes(x = date, y = sc, color = metric))+
+ggplot(reedy_melt[time_range != 'non-relevant' & metric == 'mean_sc'], aes(x = date, y = sc, color = metric))+
   facet_wrap(~time_range, scales = "free_x", switch = 'x')+
   geom_line()+
   ggtitle('SC at Reedy Island')
@@ -264,9 +268,69 @@ bfb_melt = melt(data = bfb_clean, id.vars = c("agency_cd", "site_no", 'date', 't
 setnames(bfb_melt, 'variable', 'metric')
 setnames(bfb_melt, 'value', 'sc')
 
-ggplot(bfb_melt[time_range != 'non-relevant'], aes(x = date, y = sc, color = metric))+
+ggplot(bfb_melt[time_range != 'non-relevant' & metric == 'mean_sc'], aes(x = date, y = sc, color = metric))+
   facet_wrap(~time_range, scales = "free_x", switch = 'x')+
   geom_line()+
   ggtitle('SC at Ben Franklin Bridge')
+```
+
+
+# Build Training Data
+```{r}
+# data sets to merge: tide: 
+#[meyer_tide_dat]
+#inflows: [dr, sr]
+#sc: [chester, reedy, bfb])
+
+
+dr <- dr %>% mutate(inflow = avg_discharge_cfps*0.0283168, river = 'delware')
+sr <- sr %>% mutate(inflow = avg_discharge_cfps*0.0283168, river = 'schuylkill')
+
+inflows <- rbind(dr_clean[, c('date', 'inflow', 'river')], sr_clean[, c('date', 'inflow', 'river')])
+
+chester <- chester %>% mutate(location = 'chester')
+reedy <- reedy %>% mutate(location = 'reedy')
+bfb <- bfb %>% mutate(location = 'ben_franklin')
+
+
+sc = rbind(chester[, c('date', 'location', 'mean_sc')], reedy[, c('date', 'location', 'mean_sc')], bfb[, c('date', 'location', 'mean_sc')])
+
+
+tide_dat = tide_data[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
+  group_by(AtlanticCity.date) %>% 
+  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
+
+setnames(tide_dat, 'AtlanticCity.date', 'date')
+tide_dat$date = as.Date(tide_dat$date)
+
+
+training_data = merge(inflows, tide_dat, how = 'left')
+training_data = merge(training_data, sc, how = 'left')
+
+```
+
+```{r}
+ggplot(training_data, aes(date, inflow, color = river))+
+  geom_point()+
+  facet_wrap(~river, scales = 'free_y', switch = 'y')+
+  ggtitle('All Time Inflow Values')
+```
+
+
+```{r}
+ggplot(training_data, aes(date, mean_sc, color = location))+
+  geom_point()+
+  facet_wrap(~location, , scales = "free_y", switch = 'y')+
+  ggtitle("All Time Mean SC Values")
+```
+```{r}
+ggplot(training_data, aes(date, avg_daily_sea_level))+
+  geom_point()+
+  ggtitle('All Time Tide Levels')
+```
+
+
+```{r}
+write.csv(training_data, '../data/processed/training_data.csv')
 ```
 
