@@ -1,0 +1,173 @@
+---
+title: "Validating Equations"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Some open questions:
+1. Clarify: is q_n_t either the short term or long term moving average? 
+2. how are N_s and N_l determined? L_l and L_s ? Q1 and Q2 ?
+3. Are equation 4 inequalities mixed up?
+4. Should equation 2 have q_s instead of q_l?
+5. How are the 10 unknowns estimated via the two part sum squared error?
+6. q_j = sum of Trenton, Schuylkill, and PST model inflow on day j ; does this mean we should be summing up all the locations...? if we are using the average daily flow rather than the sum of total flow could that be affecting results?
+
+10 unknowns below -- we would just plug into R to find ad-hocly with two part sum square error?
+
+d_s = decay coefficient for short-term moving average flow; 
+d_l = decay coefficient for long-term moving average flow; 
+
+a_s = constant for short-term moving average flow relationship; 
+a_l = constant for long-term moving average flow relationship; 
+
+P_s = power coefficient for short-term moving average flow relationship; 
+P_l = power coefficient for long-term moving average flow relationship; 
+
+C_s = offset for short-term mov-ing average flow relationship; 
+C_l = offset for long-term movingaverage flow relationship;
+
+tao_s = tidal coefficient for short term moving average flow relationship; 
+tao_l = tidal coefficient for longterm moving average flow relationship;
+
+
+
+
+k_st = short-term moving average flow SC at time t; -> calculated via equation (2)
+k_lt = long-term moving average flow SC at time t; -> calculated via equation (3)
+
+q_st = short-term moving average flow at time t; 
+q_lt = long-term moving average flow at time t; 
+
+N_s = number of days for short term
+N_l = number of days for long terms?
+
+Q_l = maximum flow at which k_st contributes to K_t;
+Q_2 = minimum flow at which k_lt contributes to K_t;
+
+L_s = short-term maximum 1-day change in SC; 
+L_l = long-term maximum 1-day change in SC; 
+
+
+
+
+Reading in Ben Franklin Bridge SC data with Delaware River Inflow data to use as a first pass cross check with Figure 3 in Meyer paper
+```{r}
+library(data.table)
+library(tidyr)
+library(dplyr)
+dat = fread('../data/processed/training_data.csv')
+bfb = dat[location == 'del_bfb']
+
+bfb <- bfb %>% drop_na(mean_sc)
+
+# convert inflow data back to cubic feet per second and convert sea level (meters) to feet...will revisit this to make sure raw tide data was provided in meters
+bfb <- bfb %>% mutate(inflow = inflow/0.0283168,
+                      reedy_sl = reedy_sl*3.28084)
+```
+
+Initalize parameter values based on table of values in Meyer paper
+```{r}
+
+n_s = 10
+n_l = 30
+Q1 = 2800*0.0283168  # they provide Q1 and Q2 in cubic feet per second; our inflows are in cubic meters per second
+Q2 = 4800*0.0283168
+
+as = 355000
+Ps = -0.8998
+Cs = 132.08
+ds = .19
+Ls = 3
+tao_s = 35312.54
+
+al = 2600000
+Pl = -1.06
+Cl = 118.2
+dl = .0426
+Ll = 5.5
+tao_l = -2544.23
+
+```
+
+Based on this data, 1964-12-15 is the first day we can make a prediction of K (31 days into the data). So, we need to pick an initial condition to test the PBEM model. Based on the rolling average values of mean sc leading up to those dates, we will choose 640 as the initial k_st value and 884 as the initial k_lt value.
+
+```{r}
+library(zoo)
+
+# is it right to calculate the q_st and q_lt values as rolling averages
+bf <- bfb %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
+                      q_lt = rollmean(x = inflow, n_l, align = 'right', fill = NA), # n_l = 30 days
+                      #k_st = rollmean(x = mean_sc, 10, align = 'right', fill = NA), #-- 640.7 , 1964-12-15
+                      #k_lt = rollmean(x = mean_sc, 30, align = 'right', fill = NA), #-- 884.3333, 1964-12-15
+                      Q1 = Q1,
+                      Q2 = Q2,
+                      Ls = Ls,
+                      Ll = Ll)
+```
+
+
+Some of the sea level days of data are missing, which breaks equations (2) and (3) when we multiply by the tide values. So as a first pass I just imputed the missing days of tide data with the previous non-NA value.
+
+```{r}
+bf <- bf %>% drop_na(q_lt) %>%
+          fill(reedy_sl) ## IS THIS A VALID IMPUTATION METHOD? WITHOUT THIS, THE NAs cause equations (2) and (3) to fail
+```
+
+
+Initialize 1964-12-15 values of k_st and k_lt based on rolling average method and run the for loop to calculate the subsequent values of k_st and k_lt.
+
+```{r}
+st_k_values = c(640)
+lt_k_values = c(884)
+
+# loop through all rows of data after the first initial row
+for (t in (2:nrow(bf))){
+  
+  # store the previous time step slice of data
+  bf_slice = bf[t-1]
+  
+  # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
+  k_st <- st_k_values[t-1] + min(Ls, ds * as * bf_slice$q_st^(Ps) + Cs - st_k_values[t-1] + tao_s/bf_slice$q_lt * bf_slice$reedy_sl)
+  
+  # set k_lt equal to equation 3
+  k_lt <- lt_k_values[t-1] + min(Ll, dl * al * bf_slice$q_lt^(Pl) + Cl - lt_k_values[t-1] + tao_l/bf_slice$q_lt * bf_slice$reedy_sl)
+  
+  st_k_values <- append(st_k_values, k_st)
+  lt_k_values <- append(lt_k_values, k_lt)
+  
+}
+
+```
+
+
+Add the k_st and k_lt values to our existing data 
+```{r}
+bf <- bf %>% mutate(k_st = st_k_values, k_lt = lt_k_values)
+```
+
+Finally, add the logic to predict capital K depending on the relationship between q and Q
+
+```{r}
+# ql;t ≤ Ql      -> k_st (maybe authors have this swapped?)
+# ql;t ≥ Q2      -> k_lt (maybe authors have this swapped?)
+# Ql < ql;t ≤ Q2 -> 
+bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_st, 
+                            ifelse(q_lt >= Q2, k_lt, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))))
+```
+
+Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
+
+```{r}
+library(ggplot2)
+ggplot()+
+  geom_point(data = bf[date < '1967-01-01' & date > '1966-01-01'], aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_point(data = bf[date < '1967-01-01' & date > '1966-01-01'], aes(x = date, y = K_hat, color = 'pbem')) +
+  xlab('Date') +
+  ylab('SC Value')+
+  ggtitle('First Attempt To Predict SC Using PBEM')
+```
+
+
+
+

@@ -8,30 +8,17 @@ output:
 ```{r, error=FALSE, warning=FALSE, message=FALSE}
 library(data.table)
 library(lubridate)
-library(sf)
-library(sp)
-library(lubridate)
-library(gridExtra)
-library(MASS)
-library(mgcv)
-library(Metrics)
-library(tictoc)
-library(stats)
 library(tidyverse)
 library(ggplot2)
-library(forecast)
-library(tictoc)
-library(stringr)
-library(mapdata)
-library(mapview)
-library(leaflet)
 library(dplyr)
-library(mde)
+library(zoo)
 ```
 
 We essentially have 6 data sources that we want to explore / validate. The first data source is the tide data which Carling has compiled via TideGauge_DailyData.rds. To start, we focused only on the Atlantic City location since this is the source that is referenced in the Meyer paper. In the future, we may consider replacing the Atlantic City data with Cape May data since it is closer to the ocean. As far as I know, there are no plots or references in the Meyer paper that we can use to validate whether the tide data we are working with is reasonably similar to the data they were using.
 
 # 1. Tide Data
+
+-- Re-download the tide data and blend actual reedy island tide daily avgs with atlantic city tide daily avgs * some factor
 
 ```{r cars}
 tide_data <- readRDS('../data/raw/TideGauge_DailyData.rds')
@@ -40,33 +27,58 @@ tide_data = as.data.table(tide_data)
 #Time Range 1: November 1, 1964 to November 1, 1966
 #Time Range 2: November 1997 to November 1999)
 
-relevant_tide_dat = tide_data[(AtlanticCity.datetimestamp <= '1999-11-01' & AtlanticCity.datetimestamp >= '1997-11-01' ) | 
-                                (AtlanticCity.datetimestamp >= '1964-11-01' & AtlanticCity.datetimestamp <= '1966-11-01')]
+relevant_tide_dat = tide_data[, c('ReedyPoint.date', 'ReedyPoint.sea_level', 'AtlanticCity.date', 'AtlanticCity.sea_level')]
 
 # cape may sealevel
 # fort pulasaki sealevel
 # springmaid pier sealevel
 # charleston
 relevant_tide_dat$AtlanticCity.date = as.Date(relevant_tide_dat$AtlanticCity.date)
-meyer_tide_dat = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
-  group_by(AtlanticCity.date) %>% 
-  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
+relevant_tide_dat$ReedyPoint.date = as.Date(relevant_tide_dat$ReedyPoint.date)
+```
 
-meyer_tide_dat = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
+```{r}
+atlantic = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
   group_by(AtlanticCity.date) %>% 
-  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
+  summarise(atl_sl = mean(AtlanticCity.sea_level))
 
-setnames(meyer_tide_dat, 'AtlanticCity.date', 'date')
-meyer_tide_dat = as.data.table(meyer_tide_dat)[, time_range := ifelse(date > '1967-01-01', '1997 - 1999', '1964 - 1966')]
+reedy = relevant_tide_dat[, c('ReedyPoint.date', 'ReedyPoint.sea_level')] %>% 
+  group_by(ReedyPoint.date) %>% 
+  summarise(reedy_sl = mean(ReedyPoint.sea_level))
+
+
+setnames(atlantic, 'AtlanticCity.date', 'date')
+setnames(reedy, 'ReedyPoint.date', 'date')
+
+compare = merge(reedy, atlantic)
+
 
 # TIDE TS Plot
-ggplot(meyer_tide_dat, aes(x = date, y = avg_daily_sea_level))+
-  facet_wrap(~time_range, scales = "free_x", switch = 'x')+
-  geom_line()+
-  ggtitle('Reproducing Tide Data From Meyer et al')
-
-
+ggplot(compare, aes(x = reedy_sl, y = atl_sl))+
+  geom_point()+
+  geom_smooth(method = 'lm')+
+  ggtitle('Reedy Island vs Atlantic City Avg Daily Tides')
 ```
+
+```{r}
+lm = lm(reedy_sl ~ atl_sl, data = compare)
+summary(lm)
+```
+
+The final tide data file we will use for our purposes will be "extended reedy"
+
+```{r}
+atlantic <- atlantic %>% mutate(reedy_sl = atl_sl*.9 - 27.182060)
+approx_reedy = atlantic %>% filter(date < '1979-07-01')
+
+extended_reedy = as.data.table(rbind(approx_reedy[, c('date', 'reedy_sl')], reedy))
+extended_reedy[, approximated := ifelse(date < '1979-07-01', 'proxy', 'actual')]
+
+ggplot(extended_reedy, aes(x = date, y = reedy_sl, color = approximated))+
+  geom_point(size = .2)+
+  ggtitle('Extended Reedy Sea Levels Using Atlantic City Proxy')
+```
+
 
 # DISCHARGE (INFLOW) DATA
 
@@ -79,7 +91,6 @@ Next Steps: Hopefully we can find a way to align our values with what we see in 
 Load in the text file as it appears in box. Calculate the % of missing values per each column to get a sense of where the useful data is. In most of these txt files there are 40+ columns with only 5 or 6 columns worth of filled in data values. Once we figure out the index of the columns with data, we open the txt file and match the codes at those indices with the descriptions to figure out what each filled-in column represents. It appears that only columns 1, 2, 3, 28, and 29 contain non-null data. According to the codes in this text file, those column names correspond to 'agency_cd', 'site_no',	'date', 'Discharge, cubic feet per second (Mean)', and a "cd" value...). Next we rename the columns so that we can extract the subset of useful data.
 ```{r pressure, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE}
 dr = read_delim("../data/raw/del_riv_trent.txt", delim = "\t", skip = 68, col_names = FALSE)
-missingness = percent_missing(dr)
 ```
 
 
@@ -96,7 +107,7 @@ dr_clean[, month := month(date)]
 ts_dr_flows = dr_clean %>% group_by(month) %>%
   summarise(avg_inflow = mean(avg_discharge_cfps))
 
-ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*.023168))+
+ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*0.0283168))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
   ggtitle('Average of Delaware River @ Trenton, 1950 - 2020')
@@ -109,7 +120,7 @@ ts_dr_flows = dr_clean[(date <= '1999-11-01' & date >= '1997-11-01' ) |
                                 (date >= '1964-11-01' & date <= '1966-11-01')] %>% group_by(month) %>%
   summarise(avg_inflow = mean(avg_discharge_cfps))
 
-ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*.023168))+
+ggplot(ts_dr_flows, aes(x = month, y = avg_inflow*0.0283168))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
   ggtitle('Average of Delaware River @ Trenton, 1965 to 1966 & 1998 - 1999')
@@ -124,9 +135,6 @@ Repeat the process from the Delaware river on the schuylkill river data. This
 
 ```{r, warning=FALSE, message=FALSE}
 sr <-  read_delim("../data/raw/skill_riv.txt", delim = "\t", skip = 50, col_names = FALSE)  
-
-missingness = percent_missing(sr)
-# only first 5 columns have have complete data
 ```
 
 
@@ -140,7 +148,7 @@ sr_clean[, month := month(date)]
 ts_sr_flows = sr_clean %>% group_by(month) %>%
   summarise(avg_inflow = mean(avg_discharge_cfps))
 
-ggplot(ts_sr_flows, aes(x = month, y = avg_inflow*.023168))+
+ggplot(ts_sr_flows, aes(x = month, y = avg_inflow*0.0283168))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
   ggtitle('Average of Schuylkill, 1950 - 2020')
@@ -163,7 +171,6 @@ ts_dr_flows = ts_dr_flows %>% mutate(river = 'delaware')
 flows = rbind(ts_sr_flows, ts_dr_flows)
 
 
-
 ggplot(flows, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
@@ -180,9 +187,7 @@ This plot essentially recreates Figure 2 (minus PST model inflows). The ratio of
 
 ## 4. Chester
 ```{r, results="hide", warning=FALSE, message=FALSE}
-#chester <-  read_delim("../data/raw/chester_sc.txt", delim = "\t", skip = 49, col_names = FALSE)  
 chester <-  read_delim("../data/raw/Chester_SC.txt", delim = "\t", skip = 32, col_names = FALSE)  
-missingness = percent_missing(chester)
 ```
 
 According to the codes I see in the txt file, X4 corresponds to  max SC; X6 is min SC, X8 is average SC but it is all missing
@@ -191,8 +196,6 @@ According to the codes I see in the txt file, X4 corresponds to  max SC; X6 is m
 colnames(chester) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'na2', 'mean_sc', 'code2')
 chester_clean = as.data.table(chester[, c('agency_cd', 'site_no',	'date',  'max_sc', 'min_sc', 'mean_sc')])
 head(chester_clean)
-
-
 ```
 
 ```{r, warning=FALSE, message=FALSE}
@@ -216,7 +219,6 @@ Chester SC values line up nicely with Fig 2 in Meyer paper.
 ## 5. Reedy Island
 ```{r, warning=FALSE, message=FALSE}
 reedy <-  read_delim("../data/raw/reedy_island_sc.txt", delim = "\t", skip = 50, col_names = FALSE)  
-missingness = percent_missing(reedy)
 ```
 
 Column 4 is max SC; column 6 is min SC; column 8 is average SC
@@ -246,14 +248,12 @@ ggplot(reedy_melt[time_range != 'non-relevant' & metric == 'mean_sc'], aes(x = d
 This seems like a reasonable comparison to what we see in the Meyer paper.
 
 
-## 6. Ben Franklin Bridge -- missing SC Data?
+## 6. Ben Franklin Bridge 
 
 ```{r, warning=FALSE, message=FALSE}
 bfb <- read_delim("../data/raw/BenFranklinBridge_SC.txt", delim = "\t", skip = 32, col_names = FALSE)
-missingness = percent_missing(bfb)
 ```
 
-Columns 1,2,3, 18, 20, 24, 26 have data...But none of those data correspond with SC values (instead they correspond with temperature and dissolved oxygen values). We may need to revisit the data pull in order to get full SC coverage relative to what we see in the Meyer paper.
 
 ```{r}
 colnames(bfb) <- c('agency_cd', 'site_no',	'date',  'max_sc', 'code', 'min_sc', 'na2', 'mean_sc', 'code2')
@@ -277,54 +277,55 @@ ggplot(bfb_melt[time_range != 'non-relevant' & metric == 'mean_sc'], aes(x = dat
 
 # Build Training Data
 ```{r}
-# data sets to merge: tide: 
-#[meyer_tide_dat]
-#inflows: [dr, sr]
-#sc: [chester, reedy, bfb])
+# data sets to merge: 
+# tide: [extended_reedy]
+#inflows: [dr_clean, sr_clean]
+#sc: [chester_clean, reedy_clean, bfb_clean])
 
+# INFLOWS
+dr <- dr_clean %>% mutate(inflow = avg_discharge_cfps*0.0283168, location = 'del_bfb')
+sr <- sr_clean %>% mutate(inflow = avg_discharge_cfps*0.0283168, location = 'schu_chester')
 
-dr <- dr %>% mutate(inflow = avg_discharge_cfps*0.0283168, river = 'delware')
-sr <- sr %>% mutate(inflow = avg_discharge_cfps*0.0283168, river = 'schuylkill')
+inflows <- rbind(dr[, c('date', 'inflow', 'location')], sr[, c('date', 'inflow', 'location')])
 
-inflows <- rbind(dr_clean[, c('date', 'inflow', 'river')], sr_clean[, c('date', 'inflow', 'river')])
-
-chester <- chester %>% mutate(location = 'chester')
-reedy <- reedy %>% mutate(location = 'reedy')
-bfb <- bfb %>% mutate(location = 'ben_franklin')
+# SC
+chester <- chester_clean %>% mutate(location = 'schu_chester')
+reedy <- reedy_clean %>% mutate(location = 'reedy')
+bfb <- bfb_clean %>% mutate(location = 'del_bfb')
 
 
 sc = rbind(chester[, c('date', 'location', 'mean_sc')], reedy[, c('date', 'location', 'mean_sc')], bfb[, c('date', 'location', 'mean_sc')])
+```
 
 
-tide_dat = tide_data[, c('AtlanticCity.date', 'AtlanticCity.sea_level')] %>% 
-  group_by(AtlanticCity.date) %>% 
-  summarise(avg_daily_sea_level = mean(AtlanticCity.sea_level))
-
-setnames(tide_dat, 'AtlanticCity.date', 'date')
-tide_dat$date = as.Date(tide_dat$date)
-
-
-training_data = merge(inflows, tide_dat, how = 'left')
-training_data = merge(training_data, sc, how = 'left')
+Jane's Form Training Data
+```{r}
+training_data = merge(inflows, sc, all.y = TRUE)
+training_data = merge(training_data, extended_reedy[, c('date', 'reedy_sl')], by = 'date', all.x = TRUE)
 
 ```
 
+
+Carling Form Training Data
+
 ```{r}
-ggplot(training_data, aes(date, inflow, color = river))+
-  geom_point()+
-  facet_wrap(~river, scales = 'free_y', switch = 'y')+
+ggplot(training_data, aes(date, inflow))+
+  geom_point(size = .2)+
+  facet_wrap(~location, scales = 'free_y', switch = 'y')+
   ggtitle('All Time Inflow Values')
 ```
 
 
 ```{r}
-ggplot(training_data, aes(date, mean_sc, color = location))+
-  geom_point()+
+ggplot(training_data, aes(date, mean_sc))+
+  geom_point(size = .2)+
   facet_wrap(~location, , scales = "free_y", switch = 'y')+
-  ggtitle("All Time Mean SC Values")
+  ggtitle("All Time Mean SC Values")+
+  theme(axis.text.x = element_text(angle = 90))
 ```
+
 ```{r}
-ggplot(training_data, aes(date, avg_daily_sea_level))+
+ggplot(training_data, aes(date, reedy_sl))+
   geom_point()+
   ggtitle('All Time Tide Levels')
 ```
