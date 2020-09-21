@@ -42,15 +42,15 @@ atlantic = relevant_tide_dat[, c('AtlanticCity.date', 'AtlanticCity.sea_level')]
   group_by(AtlanticCity.date) %>% 
   summarise(atl_sl = mean(AtlanticCity.sea_level))
 
-reedy = relevant_tide_dat[, c('ReedyPoint.date', 'ReedyPoint.sea_level')] %>% 
+reedy_sl = relevant_tide_dat[, c('ReedyPoint.date', 'ReedyPoint.sea_level')] %>% 
   group_by(ReedyPoint.date) %>% 
   summarise(reedy_sl = mean(ReedyPoint.sea_level))
 
 
 setnames(atlantic, 'AtlanticCity.date', 'date')
-setnames(reedy, 'ReedyPoint.date', 'date')
+setnames(reedy_sl, 'ReedyPoint.date', 'date')
 
-compare = merge(reedy, atlantic)
+compare = merge(reedy_sl, atlantic)
 
 
 # TIDE TS Plot
@@ -302,11 +302,11 @@ Jane's Form Training Data
 ```{r}
 training_data = merge(inflows, sc, all.y = TRUE)
 training_data = merge(training_data, extended_reedy[, c('date', 'reedy_sl')], by = 'date', all.x = TRUE)
-
+head(training_data)
 ```
 
 
-Carling Form Training Data
+Visualize Training Data
 
 ```{r}
 ggplot(training_data, aes(date, inflow))+

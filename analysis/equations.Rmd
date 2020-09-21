@@ -11,42 +11,33 @@ output:
 3. Are equation 4 inequalities mixed up?
 4. Should equation 2 have q_s instead of q_l?
 5. How are the 10 unknowns estimated via the two part sum squared error?
-6. q_j = sum of Trenton, Schuylkill, and PST model inflow on day j ; does this mean we should be summing up all the locations...? if we are using the average daily flow rather than the sum of total flow could that be affecting results?
+6. Authors say "q_j = sum of Trenton, Schuylkill, and PST model inflow on day j" ... is our inflow data already in terms of daily total flow? 
 
 10 unknowns below -- we would just plug into R to find ad-hocly with two part sum square error?
 
-d_s = decay coefficient for short-term moving average flow; 
-d_l = decay coefficient for long-term moving average flow; 
+a. d_s / d_l = decay coefficient for short-term / long-term moving average flow; 
 
-a_s = constant for short-term moving average flow relationship; 
-a_l = constant for long-term moving average flow relationship; 
+b. a_s / a_l = constant for short-term / long-term moving average flow relationship; 
 
-P_s = power coefficient for short-term moving average flow relationship; 
-P_l = power coefficient for long-term moving average flow relationship; 
+c. P_s / P_l = power coefficient for short-term / long-term moving average flow relationship; 
 
-C_s = offset for short-term mov-ing average flow relationship; 
-C_l = offset for long-term movingaverage flow relationship;
-
-tao_s = tidal coefficient for short term moving average flow relationship; 
-tao_l = tidal coefficient for longterm moving average flow relationship;
+d. C_s / C_l = offset for short-term / long-term-term mov-ing average flow relationship; 
+ 
+e. tao_s / tao_l = tidal coefficient for short-term / long-term term moving average flow relationship; 
+ 
 
 
+10 unknowns below -- we need to ask the authors how they were derived?
 
+k_st / k_lt = short-term / long term moving average flow SC at time t; -> calculated via equation (2) / (3)
 
-k_st = short-term moving average flow SC at time t; -> calculated via equation (2)
-k_lt = long-term moving average flow SC at time t; -> calculated via equation (3)
+q_st / q_lt = short-term / long term moving average flow at time t; 
+ 
+N_s / N_l = number of days for short term / long term
 
-q_st = short-term moving average flow at time t; 
-q_lt = long-term moving average flow at time t; 
+Q_1 / Q_2 = maximum flow at which k_st  / k_lt contributes to K_t;
 
-N_s = number of days for short term
-N_l = number of days for long terms?
-
-Q_l = maximum flow at which k_st contributes to K_t;
-Q_2 = minimum flow at which k_lt contributes to K_t;
-
-L_s = short-term maximum 1-day change in SC; 
-L_l = long-term maximum 1-day change in SC; 
+L_s / L_l = short-term / long-term maximum 1-day change in SC; 
 
 
 
@@ -61,9 +52,10 @@ bfb = dat[location == 'del_bfb']
 
 bfb <- bfb %>% drop_na(mean_sc)
 
-# convert inflow data back to cubic feet per second and convert sea level (meters) to feet...will revisit this to make sure raw tide data was provided in meters
-bfb <- bfb %>% mutate(inflow = inflow/0.0283168,
-                      reedy_sl = reedy_sl*3.28084)
+# convert inflow data back to cubic feet per second and convert sea level (meters) to feet...
+#will revisit this to confirm raw tide data was provided in meters
+bfb <- bfb %>% mutate(inflow = inflow/0.0283168, #convert inflow from cmps to cfps
+                      reedy_sl = reedy_sl*12) # convert reedy_sl from inches to feet
 ```
 
 Initalize parameter values based on table of values in Meyer paper
@@ -71,8 +63,8 @@ Initalize parameter values based on table of values in Meyer paper
 
 n_s = 10
 n_l = 30
-Q1 = 2800*0.0283168  # they provide Q1 and Q2 in cubic feet per second; our inflows are in cubic meters per second
-Q2 = 4800*0.0283168
+Q1 = 2800  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
+Q2 = 4800
 
 as = 355000
 Ps = -0.8998
@@ -98,8 +90,6 @@ library(zoo)
 # is it right to calculate the q_st and q_lt values as rolling averages
 bf <- bfb %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
                       q_lt = rollmean(x = inflow, n_l, align = 'right', fill = NA), # n_l = 30 days
-                      #k_st = rollmean(x = mean_sc, 10, align = 'right', fill = NA), #-- 640.7 , 1964-12-15
-                      #k_lt = rollmean(x = mean_sc, 30, align = 'right', fill = NA), #-- 884.3333, 1964-12-15
                       Q1 = Q1,
                       Q2 = Q2,
                       Ls = Ls,
@@ -111,63 +101,109 @@ Some of the sea level days of data are missing, which breaks equations (2) and (
 
 ```{r}
 bf <- bf %>% drop_na(q_lt) %>%
-          fill(reedy_sl) ## IS THIS A VALID IMPUTATION METHOD? WITHOUT THIS, THE NAs cause equations (2) and (3) to fail
+          fill(reedy_sl) ## IS THIS A VALID IMPUTATION METHOD? (fill NA with previous value?)
+                        # WITHOUT IT, THE NAs cause equations (2) and (3) to fail
 ```
 
 
 Initialize 1964-12-15 values of k_st and k_lt based on rolling average method and run the for loop to calculate the subsequent values of k_st and k_lt.
 
 ```{r}
-st_k_values = c(640)
-lt_k_values = c(884)
+st_k_values = c(500)
+lt_k_values = c(500)
+term_2s = c(0)
+term_2l = c(0)
+
 
 # loop through all rows of data after the first initial row
 for (t in (2:nrow(bf))){
   
   # store the previous time step slice of data
-  bf_slice = bf[t-1]
+  t_minus1 = bf[t-1]
+  t_0 = bf[t]
+  
+  #    = .19 * (355000 * (q_st-1)^-8998 + 132.08 - k_st-1) + 35312.54 / q_lt
+  t_2s = ds *(as * t_minus1$q_st^(Ps) + Cs - st_k_values[t-1]) + tao_s/t_0$q_lt * t_0$reedy_sl
+  t_2l = dl * (al * t_minus1$q_lt^(Pl) + Cl - lt_k_values[t-1]) + tao_l/t_0$q_lt * t_0$reedy_sl
   
   # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  k_st <- st_k_values[t-1] + min(Ls, ds * as * bf_slice$q_st^(Ps) + Cs - st_k_values[t-1] + tao_s/bf_slice$q_lt * bf_slice$reedy_sl)
+  k_st <- st_k_values[t-1] + min(Ls, t_2s)
   
   # set k_lt equal to equation 3
-  k_lt <- lt_k_values[t-1] + min(Ll, dl * al * bf_slice$q_lt^(Pl) + Cl - lt_k_values[t-1] + tao_l/bf_slice$q_lt * bf_slice$reedy_sl)
+  k_lt <- lt_k_values[t-1] + min(Ll, t_2l)
   
   st_k_values <- append(st_k_values, k_st)
   lt_k_values <- append(lt_k_values, k_lt)
+  term_2s <- append(term_2s, t_2s)
+  term_2l <- append(term_2l, t_2l)
   
 }
 
 ```
 
-
 Add the k_st and k_lt values to our existing data 
 ```{r}
-bf <- bf %>% mutate(k_st = st_k_values, k_lt = lt_k_values)
+bf <- bf %>% mutate(term_2s = term_2s,
+                    term_2l = term_2l,
+                    k_st = st_k_values, 
+                    k_lt = lt_k_values)
 ```
 
 Finally, add the logic to predict capital K depending on the relationship between q and Q
 
 ```{r}
-# ql;t ≤ Ql      -> k_st (maybe authors have this swapped?)
-# ql;t ≥ Q2      -> k_lt (maybe authors have this swapped?)
-# Ql < ql;t ≤ Q2 -> 
-bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_st, 
-                            ifelse(q_lt >= Q2, k_lt, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))))
+# ql_t <= Q1      -> k_st (maybe authors have this swapped?)
+# ql_t >= Q2      -> k_lt (maybe authors have this swapped?)
+# Ql < qlt <= Q2 -> 
+bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_lt, 
+                            ifelse(q_lt >= Q2, k_st, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))),
+                    inequality = ifelse(q_lt <= Q1, 'first', 
+                            ifelse(q_lt >= Q2, 'third', 'second')))
 ```
 
 Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 
 ```{r}
 library(ggplot2)
+bf$date = as.Date(bf$date)
+
+
 ggplot()+
-  geom_point(data = bf[date < '1967-01-01' & date > '1966-01-01'], aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_point(data = bf[date < '1967-01-01' & date > '1966-01-01'], aes(x = date, y = K_hat, color = 'pbem')) +
+  geom_point(data = bf, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_point(data = bf, aes(x = date, y = K_hat, color = 'pbem')) +
+  #geom_point(data = bf[date < '1966-11-01' & date > '1964-11-01'], aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  #geom_point(data = bf[date < '1966-11-01' & date > '1964-11-01'], aes(x = date, y = K_hat, color =  'pbem_k0_500')) +
   xlab('Date') +
   ylab('SC Value')+
-  ggtitle('First Attempt To Predict SC Using PBEM')
+  ggtitle('Second Attempt To Predict SC Using PBEM, Initial Conditions = 500')+
+  theme(axis.text.x = element_text(angle = 90))+
+  ylim(-800,800)
+  #scale_x_continuous(name ="Date", breaks=c('1964-11-01', '1966-11-01'))
 ```
 
+Plot the power curve in equation 3
+```{r}
+long_term_power_curve = c()
+short_term_power_curve = c()
 
+for (t in (2:nrow(bf))){
+  
+  # store the previous time step slice of data
+  bf_slice = bf[t-1]
+  
+  # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
+  short_power <-  as * bf_slice$q_st^(Ps) + Cs - lt_k_values[t-1] 
+  
+  # set k_lt equal to equation 3
+  long_power <- al * bf_slice$q_lt^(Pl) + Cl - lt_k_values[t-1] 
+                                  
+  short_term_power_curve <- append(short_term_power_curve, short_power)
+  long_term_power_curve <- append(long_term_power_curve, long_power)
+  
+}
+```
 
+```{r}
+
+```
 
