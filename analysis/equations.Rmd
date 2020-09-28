@@ -48,35 +48,57 @@ library(data.table)
 library(tidyr)
 library(dplyr)
 dat = fread('../data/processed/training_data.csv')
-bfb = dat[location == 'del_bfb']
 
+# use this for SC values
+bfb = dat[location == 'del_bfb']
 bfb <- bfb %>% drop_na(mean_sc)
 
 # convert inflow data back to cubic feet per second and convert sea level (meters) to feet...
 #will revisit this to confirm raw tide data was provided in meters
-bfb <- bfb %>% mutate(inflow = inflow/0.0283168, #convert inflow from cmps to cfps
-                      reedy_sl = reedy_sl*12) # convert reedy_sl from inches to feet
+input_data <- dat %>% group_by(date) %>% 
+  summarise(inflow = sum(inflow, na.rm = TRUE)/0.0283168, #convert inflow from cmps to cfps
+                      reedy_sl = mean(reedy_sl)*12) # convert reedy_sl from inches to feet
 ```
 
 Initalize parameter values based on table of values in Meyer paper
 ```{r}
 
+#n_s = 10
+#n_l = 30
+#Q1 = 2800  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
+#Q2 = 4800
+
+#as = 355000
+#Ps = -0.8998
+#Cs = 132.08
+#ds = .19
+#Ls = 3
+#tao_s = 35312.54
+
+#al = 2600000
+#Pl = -1.06
+#Cl = 118.2
+#dl = .0426
+#Ll = 5.5
+#tao_l = -2544.23
+
+
 n_s = 10
 n_l = 30
-Q1 = 2800  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
-Q2 = 4800
+thresh_10 = 3700  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
+thresh_30 = 3000
 
-as = 355000
-Ps = -0.8998
-Cs = 132.08
-ds = .19
+as = 52352.7976
+Ps = -0.654734
+Cs = 105.45053
+ds = .80988481
 Ls = 3
 tao_s = 35312.54
 
-al = 2600000
-Pl = -1.06
-Cl = 118.2
-dl = .0426
+al = 37912467
+Pl = -1.394098647
+Cl = -.434095416
+dl = 1.912292411
 Ll = 5.5
 tao_l = -2544.23
 
@@ -88,8 +110,12 @@ Based on this data, 1964-12-15 is the first day we can make a prediction of K (3
 library(zoo)
 
 # is it right to calculate the q_st and q_lt values as rolling averages
-bf <- bfb %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
+input_data <- input_data %>% mutate(water_level = (reedy_sl - 566)/(12*9),
+                      q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
                       q_lt = rollmean(x = inflow, n_l, align = 'right', fill = NA), # n_l = 30 days
+                      power_10d = as*lag(q_st)^(Ps) + Cs,
+                      power_30d = al*lag(q_lt)^(Pl) + Cl,
+                       # need to ask Eliot about this
                       Q1 = Q1,
                       Q2 = Q2,
                       Ls = Ls,
@@ -100,8 +126,9 @@ bf <- bfb %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA
 Some of the sea level days of data are missing, which breaks equations (2) and (3) when we multiply by the tide values. So as a first pass I just imputed the missing days of tide data with the previous non-NA value.
 
 ```{r}
-bf <- bf %>% drop_na(q_lt) %>%
-          fill(reedy_sl) ## IS THIS A VALID IMPUTATION METHOD? (fill NA with previous value?)
+input_data <- input_data %>% drop_na(q_lt) %>%
+          filter(date >= '1964-11-15') %>%
+          fill(water_level) ## IS THIS A VALID IMPUTATION METHOD? (fill NA with previous value?)
                         # WITHOUT IT, THE NAs cause equations (2) and (3) to fail
 ```
 
@@ -109,28 +136,33 @@ bf <- bf %>% drop_na(q_lt) %>%
 Initialize 1964-12-15 values of k_st and k_lt based on rolling average method and run the for loop to calculate the subsequent values of k_st and k_lt.
 
 ```{r}
-st_k_values = c(500)
-lt_k_values = c(500)
+st_k_values = c(558)
+lt_k_values = c(924)
 term_2s = c(0)
 term_2l = c(0)
 
 
+# column E: 10d MA sum = q_st
+# column F: irrelevant for BFB
+# column G: 30d MA sum = q_lt
+# column H: 10d Power Eqn = as* q_st - 1^Ps + Cs
+# column I: 30d Power Eqn = al * q_lt - 1 ^ Pl + Cl
+# column J: 10d Model = k_st
+# column K: 30d Model = k_lt
+
+input_data = as.data.table(input_data)
 # loop through all rows of data after the first initial row
-for (t in (2:nrow(bf))){
+for (t in (2:nrow(input_data))){
   
   # store the previous time step slice of data
-  t_minus1 = bf[t-1]
-  t_0 = bf[t]
-  
-  #    = .19 * (355000 * (q_st-1)^-8998 + 132.08 - k_st-1) + 35312.54 / q_lt
-  t_2s = ds *(as * t_minus1$q_st^(Ps) + Cs - st_k_values[t-1]) + tao_s/t_0$q_lt * t_0$reedy_sl
-  t_2l = dl * (al * t_minus1$q_lt^(Pl) + Cl - lt_k_values[t-1]) + tao_l/t_0$q_lt * t_0$reedy_sl
+  t_minus1 = input_data[t-1]
+  t_0 = input_data[t]
   
   # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  k_st <- st_k_values[t-1] + min(Ls, t_2s)
+  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$water_level)
   
   # set k_lt equal to equation 3
-  k_lt <- lt_k_values[t-1] + min(Ll, t_2l)
+  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$water_level)
   
   st_k_values <- append(st_k_values, k_st)
   lt_k_values <- append(lt_k_values, k_lt)
@@ -143,10 +175,8 @@ for (t in (2:nrow(bf))){
 
 Add the k_st and k_lt values to our existing data 
 ```{r}
-bf <- bf %>% mutate(term_2s = term_2s,
-                    term_2l = term_2l,
-                    k_st = st_k_values, 
-                    k_lt = lt_k_values)
+input_data <- input_data %>% mutate(model_10d = st_k_values, 
+                    model_30d = lt_k_values)
 ```
 
 Finally, add the logic to predict capital K depending on the relationship between q and Q
@@ -155,31 +185,58 @@ Finally, add the logic to predict capital K depending on the relationship betwee
 # ql_t <= Q1      -> k_st (maybe authors have this swapped?)
 # ql_t >= Q2      -> k_lt (maybe authors have this swapped?)
 # Ql < qlt <= Q2 -> 
-bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_lt, 
-                            ifelse(q_lt >= Q2, k_st, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))),
-                    inequality = ifelse(q_lt <= Q1, 'first', 
-                            ifelse(q_lt >= Q2, 'third', 'second')))
+#bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_lt, 
+ #                           ifelse(q_lt >= Q2, k_st, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))),
+  #                  inequality = ifelse(q_lt <= Q1, 'first', 
+   #                         ifelse(q_lt >= Q2, 'third', 'second')))
+
+
+input_data <- input_data %>% mutate(model_output = model_10d*max(0, min(1, q_lt - thresh_30/ 700)) + 
+                                      model_30d*(min(1, max(0, (thresh_10 - q_lt)/700) ))
+                                    )
 ```
 
 Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 
 ```{r}
+validate = merge(input_data, bfb[, c('date', 'mean_sc')])
+```
+
+
+```{r}
 library(ggplot2)
-bf$date = as.Date(bf$date)
+validate$date = as.Date(validate$date)
+validate = validate %>% filter(inflow > 0)
 
 
 ggplot()+
-  geom_point(data = bf, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_point(data = bf, aes(x = date, y = K_hat, color = 'pbem')) +
-  #geom_point(data = bf[date < '1966-11-01' & date > '1964-11-01'], aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  #geom_point(data = bf[date < '1966-11-01' & date > '1964-11-01'], aes(x = date, y = K_hat, color =  'pbem_k0_500')) +
+  geom_point(data = validate, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_line(data = validate, aes(x = date, y = model_output, color = 'pbem_model')) +
   xlab('Date') +
   ylab('SC Value')+
-  ggtitle('Second Attempt To Predict SC Using PBEM, Initial Conditions = 500')+
-  theme(axis.text.x = element_text(angle = 90))+
-  ylim(-800,800)
+  ggtitle('Predicting SC Using PBEM')+
+  theme(axis.text.x = element_text(angle = 90))
+  #ylim(-800,800)
   #scale_x_continuous(name ="Date", breaks=c('1964-11-01', '1966-11-01'))
 ```
+
+```{r}
+
+drill_down <- validate %>% filter(date >= '1998-01-01' & date <= '1999-09-01')
+
+ggplot()+
+  geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_line(data = drill_down, aes(x = date, y = model_output, color = 'pbem_model')) +
+  xlab('Date') +
+  ylab('SC Value')+
+  ggtitle('Predicting SC Using PBEM')+
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+
+
+
+
 
 Plot the power curve in equation 3
 ```{r}

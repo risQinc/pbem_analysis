@@ -171,11 +171,11 @@ ts_dr_flows = ts_dr_flows %>% mutate(river = 'delaware')
 flows = rbind(ts_sr_flows, ts_dr_flows)
 
 
-ggplot(flows, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
+ggplot(dr_clean, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
- ggtitle('Average of Monthly Flows, 1965 to 1966 & 1998 - 1999')
-#ggtitle('Average of Monthly Flows, 1950 - 2020')
+ #ggtitle('Average of Monthly Flows, 1965 to 1966 & 1998 - 1999')
+ggtitle('Average of Monthly Flows, 1950 - 2020')
 
 ```
 
