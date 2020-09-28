@@ -1,0 +1,89 @@
+---
+title: "Meyer Data"
+output: pdf_document
+---
+
+```{r, error=FALSE, warning=FALSE, message=FALSE}
+library(data.table)
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(zoo)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+meyer <- fread('../data/raw/meyer_raw_data.csv')
+meyer$Date = as.Date(meyer$Date)
+meyer$trenton_flow_cfs = as.numeric(meyer$trenton_flow_cfs)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+ggplot(meyer, aes(x = Date, y = water_level*12 + 45.22766))+
+  geom_point(size = .2)+
+  ggtitle('Meyer Water Level Plot -- Adjusted')
+```
+
+
+
+
+
+```{r}
+meyer[, month := month(Date)]
+
+
+subset_meyer = meyer[(Date <= '1999-11-01' & Date >= '1997-11-01' ) | (Date >= '1964-11-01' & Date <= '1966-11-01')]
+
+monthly_flows = subset_meyer %>% group_by(month) %>%
+  summarise(avg_trenton = mean(trenton_flow_cfs, na.rm = TRUE),
+            avg_schu = mean(schu_flow_cfs, na.rm = TRUE))
+
+monthly_flows = as.data.table(monthly_flows)
+
+monthly_flows2 = melt(monthly_flows, id.vars = 'month', measure.vars = c('avg_trenton', 'avg_schu'),
+                      variable.name = 'river', value.name = 'inflow')
+
+ggplot(monthly_flows2, aes(x = month, y = inflow*0.0283168, fill = river))+
+  geom_bar(stat = 'identity', position = 'dodge')+
+  #ylim(0,600)+
+  ggtitle('Meyer Inflows - Same Time Period')
+```
+
+```{r}
+sc_values = meyer[, c('Date', 'SC_Chester', 'SC_Reedy', 'SC_BFB')]
+
+sc_values2 = melt(sc_values, id.vars = 'Date', measure.vars = c('SC_Chester', 'SC_Reedy', 'SC_BFB'),
+                  variable.name = 'site', value.name = 'sc_value')
+
+sc_values_t1 = sc_values2[ (Date <= '1999-11-01') & (Date >= '1997-11-01')]
+sc_values_t2 = sc_values2[(Date >= '1964-11-01') & (Date <= '1966-11-01')]
+
+
+ggplot(sc_values_t1, aes(x = Date, y = sc_value))+
+  facet_wrap(~site, scales = 'free_y')+
+  geom_point()+
+  ggtitle('Meyer SC Values, 1997 - 1999')
+
+
+ggplot(sc_values_t2, aes(x = Date, y = sc_value))+
+  facet_wrap(~site, scales = 'free_y')+
+  geom_point()+
+  ggtitle('Meyer SC Values, 1964 - 1966')
+```
+
+
+
+
+
+
+
