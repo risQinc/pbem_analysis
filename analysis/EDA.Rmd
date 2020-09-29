@@ -71,14 +71,19 @@ The final tide data file we will use for our purposes will be "extended reedy"
 atlantic <- atlantic %>% mutate(reedy_sl = atl_sl*.9 - 27.182060)
 approx_reedy = atlantic %>% filter(date < '1979-07-01')
 
-extended_reedy = as.data.table(rbind(approx_reedy[, c('date', 'reedy_sl')], reedy))
+extended_reedy = as.data.table(rbind(approx_reedy, atlantic))
 extended_reedy[, approximated := ifelse(date < '1979-07-01', 'proxy', 'actual')]
 
 ggplot(extended_reedy, aes(x = date, y = reedy_sl, color = approximated))+
   geom_point(size = .2)+
   ggtitle('Extended Reedy Sea Levels Using Atlantic City Proxy')
 ```
-
+```{r}
+extended_reedy[, water_level := (reedy_sl - 49.229)/12]
+ggplot(extended_reedy, aes(x = date, y = water_level))+
+  geom_point(size = .2)+
+  ggtitle('Water Level Data, Mean Adjusted')
+```
 
 # DISCHARGE (INFLOW) DATA
 

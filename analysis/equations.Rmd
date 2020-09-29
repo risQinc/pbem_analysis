@@ -49,6 +49,11 @@ library(tidyr)
 library(dplyr)
 dat = fread('../data/processed/training_data.csv')
 
+# use this to pull in actual meyer inputs
+meyer_inputs <- fread('../data/raw/meyer_raw_data.csv')
+meyer_inputs$Date = as.Date(meyer_inputs$Date)
+meyer_water_level = meyer_inputs[, c('Date', 'water_level')]
+
 # use this for SC values
 bfb = dat[location == 'del_bfb']
 bfb <- bfb %>% drop_na(mean_sc)
@@ -57,7 +62,10 @@ bfb <- bfb %>% drop_na(mean_sc)
 #will revisit this to confirm raw tide data was provided in meters
 input_data <- dat %>% group_by(date) %>% 
   summarise(inflow = sum(inflow, na.rm = TRUE)/0.0283168, #convert inflow from cmps to cfps
-                      reedy_sl = mean(reedy_sl)*12) # convert reedy_sl from inches to feet
+                      reedy_sl = ((reedy_sl- 49.229)/12)) # convert reedy_sl from inches to feet
+
+input_data$date = as.Date(input_data$date)
+input_data = merge(input_data, meyer_water_level, by.x = 'date', by.y = 'Date')
 ```
 
 Initalize parameter values based on table of values in Meyer paper
@@ -110,16 +118,10 @@ Based on this data, 1964-12-15 is the first day we can make a prediction of K (3
 library(zoo)
 
 # is it right to calculate the q_st and q_lt values as rolling averages
-input_data <- input_data %>% mutate(water_level = (reedy_sl - 566)/(12*9),
-                      q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
+input_data <- input_data %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
                       q_lt = rollmean(x = inflow, n_l, align = 'right', fill = NA), # n_l = 30 days
                       power_10d = as*lag(q_st)^(Ps) + Cs,
-                      power_30d = al*lag(q_lt)^(Pl) + Cl,
-                       # need to ask Eliot about this
-                      Q1 = Q1,
-                      Q2 = Q2,
-                      Ls = Ls,
-                      Ll = Ll)
+                      power_30d = al*lag(q_lt)^(Pl) + Cl)
 ```
 
 
@@ -127,9 +129,10 @@ Some of the sea level days of data are missing, which breaks equations (2) and (
 
 ```{r}
 input_data <- input_data %>% drop_na(q_lt) %>%
-          filter(date >= '1964-11-15') %>%
-          fill(water_level) ## IS THIS A VALID IMPUTATION METHOD? (fill NA with previous value?)
-                        # WITHOUT IT, THE NAs cause equations (2) and (3) to fail
+          filter(date >= '1964-11-15' & date <= '2017-06-04') %>%
+  fill(reedy_sl)
+
+
 ```
 
 
@@ -138,17 +141,7 @@ Initialize 1964-12-15 values of k_st and k_lt based on rolling average method an
 ```{r}
 st_k_values = c(558)
 lt_k_values = c(924)
-term_2s = c(0)
-term_2l = c(0)
 
-
-# column E: 10d MA sum = q_st
-# column F: irrelevant for BFB
-# column G: 30d MA sum = q_lt
-# column H: 10d Power Eqn = as* q_st - 1^Ps + Cs
-# column I: 30d Power Eqn = al * q_lt - 1 ^ Pl + Cl
-# column J: 10d Model = k_st
-# column K: 30d Model = k_lt
 
 input_data = as.data.table(input_data)
 # loop through all rows of data after the first initial row
@@ -159,15 +152,13 @@ for (t in (2:nrow(input_data))){
   t_0 = input_data[t]
   
   # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$water_level)
+  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$water_level) # reedy_sl uses our water levels, switch to water_level to use meyer values
   
   # set k_lt equal to equation 3
-  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$water_level)
+  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$water_level) # reedy_sl uses our water levels, switch to water_level to use meyer values
   
   st_k_values <- append(st_k_values, k_st)
   lt_k_values <- append(lt_k_values, k_lt)
-  term_2s <- append(term_2s, t_2s)
-  term_2l <- append(term_2l, t_2l)
   
 }
 
@@ -191,27 +182,41 @@ Finally, add the logic to predict capital K depending on the relationship betwee
    #                         ifelse(q_lt >= Q2, 'third', 'second')))
 
 
-input_data <- input_data %>% mutate(model_output = model_10d*max(0, min(1, q_lt - thresh_30/ 700)) + 
-                                      model_30d*(min(1, max(0, (thresh_10 - q_lt)/700) ))
-                                    )
+
+#preds = c()
+#for (t in (1:nrow(input_data))){
+#  time_step = input_data[t]
+#  p = time_step$model_10d*max(0, min(1, (time_step$q_lt - thresh_30)/ 700)) + time_step$model_30d*min(1, max(0, (thresh_10 - time_step$q_lt)/700))
+#  preds = append(preds, p)
+#}
+
+final_output <- input_data %>% 
+                select(date, q_lt, model_10d, model_30d) %>%
+                group_by(date) %>%
+                mutate(model_output = model_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + model_30d*min(1, max(0, (thresh_10 - q_lt)/700) )) %>%
+  ungroup()
+
+#final_output$model_output = preds
+
 ```
 
 Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 
 ```{r}
-validate = merge(input_data, bfb[, c('date', 'mean_sc')])
+bfb$date = as.Date(bfb$date)
+copycat = merge(final_output, bfb[, c('date', 'mean_sc')])
+#risq_attempt = merge(final_output, bfb[, c('date', 'mean_sc')])
 ```
 
 
 ```{r}
 library(ggplot2)
-validate$date = as.Date(validate$date)
-validate = validate %>% filter(inflow > 0)
+copycat$date = as.Date(copycat$date)
 
 
 ggplot()+
-  geom_point(data = validate, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_line(data = validate, aes(x = date, y = model_output, color = 'pbem_model')) +
+  geom_point(data = copycat, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_line(data = copycat, aes(x = date, y = model_output, color = 'pbem_model')) +
   xlab('Date') +
   ylab('SC Value')+
   ggtitle('Predicting SC Using PBEM')+
@@ -222,19 +227,35 @@ ggplot()+
 
 ```{r}
 
-drill_down <- validate %>% filter(date >= '1998-01-01' & date <= '1999-09-01')
+drill_down <- copycat %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
 
 ggplot()+
   geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'mean_sc')) +
   geom_line(data = drill_down, aes(x = date, y = model_output, color = 'pbem_model')) +
   xlab('Date') +
   ylab('SC Value')+
-  ggtitle('Predicting SC Using PBEM')+
+  ggtitle('Predicting SC Using PBEM -- Copied Meyer Water Levels')+
   theme(axis.text.x = element_text(angle = 90))
 
 ```
 
 
+```{r}
+meyer_output = copycat$model_output 
+risq_output = risq_attempt$model_output
+
+compare = data.frame(meyer_output, risq_output)
+```
+
+```{r}
+ggplot()+
+  geom_point(data = input_data, aes(x = date, y = water_level, color = 'Meyer Water Levels', )) +
+  geom_point(data = input_data, aes(x = date, y = reedy_sl, color = 'Risq Tides', alpha = .001, shape = '.')) +
+  xlab('Date') +
+  ylab('SC Value')+
+  ggtitle('Comparing Water Level Values Across Sources')+
+  theme(axis.text.x = element_text(angle = 90))
+```
 
 
 
