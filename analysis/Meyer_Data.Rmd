@@ -19,9 +19,9 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
 ```{r cars}
-meyer <- fread('../data/raw/meyer_raw_data.csv')
-meyer$Date = as.Date(meyer$Date)
-meyer$trenton_flow_cfs = as.numeric(meyer$trenton_flow_cfs)
+meyer_inputs <- fread('../data/raw/meyer_raw_data.csv')
+meyer_inputs$Date = as.Date(meyer_inputs$Date)
+meyer_inputs$trenton_flow_cfs = as.numeric(meyer_inputs$trenton_flow_cfs)
 ```
 
 ## Including Plots
@@ -29,9 +29,9 @@ meyer$trenton_flow_cfs = as.numeric(meyer$trenton_flow_cfs)
 You can also embed plots, for example:
 
 ```{r pressure, echo=FALSE}
-ggplot(meyer, aes(x = Date, y = water_level*12 + 45.22766))+
+ggplot(meyer_inputs, aes(x = Date, y = water_level))+
   geom_point(size = .2)+
-  ggtitle('Meyer Water Level Plot -- Adjusted')
+  ggtitle('Meyer Water Level Plot')
 ```
 
 
