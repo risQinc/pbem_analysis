@@ -152,10 +152,10 @@ for (t in (2:nrow(input_data))){
   t_0 = input_data[t]
   
   # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$water_level) # reedy_sl uses our water levels, switch to water_level to use meyer values
+  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$reedy_sl) # reedy_sl uses our water levels, switch to water_level to use meyer values
   
   # set k_lt equal to equation 3
-  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$water_level) # reedy_sl uses our water levels, switch to water_level to use meyer values
+  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$reedy_sl) # reedy_sl uses our water levels, switch to water_level to use meyer values
   
   st_k_values <- append(st_k_values, k_st)
   lt_k_values <- append(lt_k_values, k_lt)
@@ -204,19 +204,19 @@ Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 
 ```{r}
 bfb$date = as.Date(bfb$date)
-copycat = merge(final_output, bfb[, c('date', 'mean_sc')])
-#risq_attempt = merge(final_output, bfb[, c('date', 'mean_sc')])
+#copycat = merge(final_output, bfb[, c('date', 'mean_sc')])
+risq_attempt = merge(final_output, bfb[, c('date', 'mean_sc')])
 ```
 
 
 ```{r}
 library(ggplot2)
-copycat$date = as.Date(copycat$date)
+risq_attempt$date = as.Date(risq_attempt$date)
 
 
 ggplot()+
-  geom_point(data = copycat, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_line(data = copycat, aes(x = date, y = model_output, color = 'pbem_model')) +
+  geom_point(data = risq_attempt, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_line(data = risq_attempt, aes(x = date, y = model_output, color = 'pbem_model')) +
   xlab('Date') +
   ylab('SC Value')+
   ggtitle('Predicting SC Using PBEM')+
@@ -227,7 +227,7 @@ ggplot()+
 
 ```{r}
 
-drill_down <- copycat %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
+drill_down <- risq_attempt %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
 
 ggplot()+
   geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'mean_sc')) +
@@ -241,10 +241,10 @@ ggplot()+
 
 
 ```{r}
-meyer_output = copycat$model_output 
-risq_output = risq_attempt$model_output
+#meyer_output = copycat$model_output 
+#risq_output = risq_attempt$model_output
 
-compare = data.frame(meyer_output, risq_output)
+#compare = data.frame(meyer_output, risq_output)
 ```
 
 ```{r}
@@ -259,29 +259,4 @@ ggplot()+
 
 
 
-Plot the power curve in equation 3
-```{r}
-long_term_power_curve = c()
-short_term_power_curve = c()
-
-for (t in (2:nrow(bf))){
-  
-  # store the previous time step slice of data
-  bf_slice = bf[t-1]
-  
-  # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  short_power <-  as * bf_slice$q_st^(Ps) + Cs - lt_k_values[t-1] 
-  
-  # set k_lt equal to equation 3
-  long_power <- al * bf_slice$q_lt^(Pl) + Cl - lt_k_values[t-1] 
-                                  
-  short_term_power_curve <- append(short_term_power_curve, short_power)
-  long_term_power_curve <- append(long_term_power_curve, long_power)
-  
-}
-```
-
-```{r}
-
-```
 
