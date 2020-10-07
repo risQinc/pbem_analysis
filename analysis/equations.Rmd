@@ -5,44 +5,6 @@ output:
   html_document: default
 ---
 
-# Some open questions:
-1. Clarify: is q_n_t either the short term or long term moving average? 
-2. how are N_s and N_l determined? L_l and L_s ? Q1 and Q2 ?
-3. Are equation 4 inequalities mixed up?
-4. Should equation 2 have q_s instead of q_l?
-5. How are the 10 unknowns estimated via the two part sum squared error?
-6. Authors say "q_j = sum of Trenton, Schuylkill, and PST model inflow on day j" ... is our inflow data already in terms of daily total flow? 
-
-10 unknowns below -- we would just plug into R to find ad-hocly with two part sum square error?
-
-a. d_s / d_l = decay coefficient for short-term / long-term moving average flow; 
-
-b. a_s / a_l = constant for short-term / long-term moving average flow relationship; 
-
-c. P_s / P_l = power coefficient for short-term / long-term moving average flow relationship; 
-
-d. C_s / C_l = offset for short-term / long-term-term mov-ing average flow relationship; 
- 
-e. tao_s / tao_l = tidal coefficient for short-term / long-term term moving average flow relationship; 
- 
-
-
-10 unknowns below -- we need to ask the authors how they were derived?
-
-k_st / k_lt = short-term / long term moving average flow SC at time t; -> calculated via equation (2) / (3)
-
-q_st / q_lt = short-term / long term moving average flow at time t; 
- 
-N_s / N_l = number of days for short term / long term
-
-Q_1 / Q_2 = maximum flow at which k_st  / k_lt contributes to K_t;
-
-L_s / L_l = short-term / long-term maximum 1-day change in SC; 
-
-
-
-
-Reading in Ben Franklin Bridge SC data with Delaware River Inflow data to use as a first pass cross check with Figure 3 in Meyer paper
 ```{r}
 library(data.table)
 library(tidyr)
@@ -50,9 +12,9 @@ library(dplyr)
 dat = fread('../data/processed/training_data.csv')
 
 # use this to pull in actual meyer inputs
-meyer_inputs <- fread('../data/raw/meyer_raw_data.csv')
-meyer_inputs$Date = as.Date(meyer_inputs$Date)
-meyer_water_level = meyer_inputs[, c('Date', 'water_level')]
+#meyer_inputs <- fread('../data/raw/meyer_raw_data.csv')
+#meyer_inputs$Date = as.Date(meyer_inputs$Date)
+#meyer_water_level = meyer_inputs[, c('Date', 'water_level')]
 
 # use this for SC values
 bfb = dat[location == 'del_bfb']
@@ -60,40 +22,31 @@ bfb <- bfb %>% drop_na(mean_sc)
 
 # convert inflow data back to cubic feet per second and convert sea level (meters) to feet...
 #will revisit this to confirm raw tide data was provided in meters
-input_data <- dat %>% group_by(date) %>% 
+input_data <- dat %>% 
+  filter(date <= '2015-03-31') %>%
+  group_by(date) %>% 
   summarise(inflow = sum(inflow, na.rm = TRUE)/0.0283168, #convert inflow from cmps to cfps
-                      reedy_sl = ((reedy_sl- 49.229)/12)) # convert reedy_sl from inches to feet
+                      no_sl_rise = (reedy_sl- 49.229)/12,
+                      action_2040 = (reedy_sl- 49.229 + 2.79 + 10.2)/12,
+                      action_2060 = (reedy_sl- 49.229 + 2.79 + 18.5)/12,
+                      action_2080 = (reedy_sl- 49.229 + 2.79 + 30.3)/12,
+                      no_action_2040 = (reedy_sl- 49.229 + 2.79 + 10.6)/12,
+                      no_action_2060 = (reedy_sl- 49.229 + 2.79 + 23.5)/12,
+                      no_action_2080 = (reedy_sl- 49.229 + 2.79 + 42.5)/12) # convert reedy_sl from inches to feet
 
 input_data$date = as.Date(input_data$date)
-input_data = merge(input_data, meyer_water_level, by.x = 'date', by.y = 'Date')
+input_data = unique(input_data)
+input_data = as.data.table(input_data)
+#input_data = merge(input_data, meyer_water_level, by.x = 'date', by.y = 'Date')
+head(input_data)
+
 ```
 
 Initalize parameter values based on table of values in Meyer paper
 ```{r}
-
-#n_s = 10
-#n_l = 30
-#Q1 = 2800  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
-#Q2 = 4800
-
-#as = 355000
-#Ps = -0.8998
-#Cs = 132.08
-#ds = .19
-#Ls = 3
-#tao_s = 35312.54
-
-#al = 2600000
-#Pl = -1.06
-#Cl = 118.2
-#dl = .0426
-#Ll = 5.5
-#tao_l = -2544.23
-
-
 n_s = 10
 n_l = 30
-thresh_10 = 3700  # they provide Q1 / Q2 in cfps; our raw inflows are in cubic meters per second
+thresh_10 = 3700  
 thresh_30 = 3000
 
 as = 52352.7976
@@ -114,14 +67,15 @@ tao_l = -2544.23
 
 Based on this data, 1964-12-15 is the first day we can make a prediction of K (31 days into the data). So, we need to pick an initial condition to test the PBEM model. Based on the rolling average values of mean sc leading up to those dates, we will choose 640 as the initial k_st value and 884 as the initial k_lt value.
 
+
+
 ```{r}
 library(zoo)
-
-# is it right to calculate the q_st and q_lt values as rolling averages
 input_data <- input_data %>% mutate(q_st = rollmean(x = inflow, n_s, align = 'right', fill = NA), # n_s = 10 days
                       q_lt = rollmean(x = inflow, n_l, align = 'right', fill = NA), # n_l = 30 days
                       power_10d = as*lag(q_st)^(Ps) + Cs,
                       power_30d = al*lag(q_lt)^(Pl) + Cl)
+
 ```
 
 
@@ -129,45 +83,78 @@ Some of the sea level days of data are missing, which breaks equations (2) and (
 
 ```{r}
 input_data <- input_data %>% drop_na(q_lt) %>%
-          filter(date >= '1964-11-15' & date <= '2017-06-04') %>%
-  fill(reedy_sl)
-
-
+          filter(date >= '1964-11-15' & date <= '2015-03-31') %>%
+          fill(c('no_sl_rise', 'action_2040',"action_2060","action_2080","no_action_2040", "no_action_2060", "no_action_2080"))
 ```
 
 
 Initialize 1964-12-15 values of k_st and k_lt based on rolling average method and run the for loop to calculate the subsequent values of k_st and k_lt.
 
-```{r}
-st_k_values = c(558)
-lt_k_values = c(924)
 
+```{r}
+iterations = nrow(input_data)
+variables = 14
+
+# initialize an empty matrix to store all of the model output
+output <- matrix(ncol=variables, nrow=iterations)
+
+
+sl_rise_scenarios = c("no_sl_rise", "action_2040" ,"action_2060", "action_2080", "no_action_2040", "no_action_2060", "no_action_2080")
 
 input_data = as.data.table(input_data)
 # loop through all rows of data after the first initial row
-for (t in (2:nrow(input_data))){
+i = 1
+for (scenario in sl_rise_scenarios) {
   
-  # store the previous time step slice of data
-  t_minus1 = input_data[t-1]
-  t_0 = input_data[t]
+  st_k_values = c(558)
+  lt_k_values = c(924)
   
-  # set k_st equal to equation 2 -- note this assumes that equation (2) is supposed to have q_lt rather than q_st
-  k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0$reedy_sl) # reedy_sl uses our water levels, switch to water_level to use meyer values
+  for (t in (2:nrow(input_data))){
   
-  # set k_lt equal to equation 3
-  k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0$reedy_sl) # reedy_sl uses our water levels, switch to water_level to use meyer values
+    # store the previous time step slice of data
+    t_minus1 = input_data[t-1]
+    t_0 = input_data[t]
   
-  st_k_values <- append(st_k_values, k_st)
-  lt_k_values <- append(lt_k_values, k_lt)
+    # calculate k_st under 6 sl rise scenarios
+    k_st <- st_k_values[t-1] + min(Ls, ds*(t_0$power_10d - st_k_values[t-1]) + tao_s/t_0$q_st*t_0[[scenario]])
+  
+    # calculate k_lt under 6 sl rise scenarios
+    k_lt <- lt_k_values[t-1] + min(Ll, dl*(t_0$power_30d - lt_k_values[t-1]) + tao_l/t_0$q_st*t_0[[scenario]])
+  
+    st_k_values <- append(st_k_values, k_st)
+    lt_k_values <- append(lt_k_values, k_lt)
+  
+  }
+  # save the model_10 and model_30d outputs
+  output[,i] <- st_k_values
+  output[,i+1] <- lt_k_values
+  i <- i + 2
   
 }
 
 ```
 
+```{r}
+output_df = as.data.table(output)
+```
+
+
 Add the k_st and k_lt values to our existing data 
 ```{r}
-input_data <- input_data %>% mutate(model_10d = st_k_values, 
-                    model_30d = lt_k_values)
+final_output <- input_data %>% mutate(nosl_10d = output_df$V1, 
+                    nosl_30d = output_df$V2,
+                    action_2040_10d = output_df$V3,
+                    action_2040_30d = output_df$V4,
+                    action_2060_10d = output_df$V5,
+                    action_2060_30d = output_df$V6,
+                    action_2080_10d = output_df$V7,
+                    action_2080_30d = output_df$V8,
+                    no_action_2040_10d = output_df$V9,
+                    no_action_2040_30d = output_df$V10,
+                    no_action_2060_10d = output_df$V11,
+                    no_action_2060_30d = output_df$V12,
+                    no_action_2080_10d = output_df$V13,
+                    no_action_2080_30d = output_df$V14)
 ```
 
 Finally, add the logic to predict capital K depending on the relationship between q and Q
@@ -190,10 +177,17 @@ Finally, add the logic to predict capital K depending on the relationship betwee
 #  preds = append(preds, p)
 #}
 
-final_output <- input_data %>% 
-                select(date, q_lt, model_10d, model_30d) %>%
+final_output <- final_output %>% 
+                select(date, q_lt, nosl_10d, nosl_30d, action_2040_10d, action_2040_30d, action_2060_10d, action_2060_30d, action_2080_10d, action_2080_30d, no_action_2040_10d, no_action_2040_30d, no_action_2060_10d, no_action_2060_30d, no_action_2080_10d, no_action_2080_30d) %>%
                 group_by(date) %>%
-                mutate(model_output = model_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + model_30d*min(1, max(0, (thresh_10 - q_lt)/700) )) %>%
+                mutate(model_output_nosl = nosl_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + nosl_30d*min(1, max(0, (thresh_10 - q_lt)/700)),   
+                       model_output_action_2040 = action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       model_output_action_2060 = action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       model_output_action_2080 = action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       model_output_no_action_2040 = no_action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       model_output_no_action_2060 = no_action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       model_output_no_action_2080 = no_action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       ) %>%
   ungroup()
 
 #final_output$model_output = preds
@@ -204,19 +198,21 @@ Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 
 ```{r}
 bfb$date = as.Date(bfb$date)
-#copycat = merge(final_output, bfb[, c('date', 'mean_sc')])
-risq_attempt = merge(final_output, bfb[, c('date', 'mean_sc')])
+model_outputs = 
+
+model_output = merge(final_output[, c('date', 'q_lt', 'model_output_nosl', 'model_output_action_2040', 'model_output_action_2060', 'model_output_action_2080', 'model_output_no_action_2040', 'model_output_no_action_2060', 'model_output_no_action_2080')], bfb[, c('date', 'mean_sc')])
 ```
 
 
 ```{r}
 library(ggplot2)
-risq_attempt$date = as.Date(risq_attempt$date)
+
 
 
 ggplot()+
-  geom_point(data = risq_attempt, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_line(data = risq_attempt, aes(x = date, y = model_output, color = 'pbem_model')) +
+  geom_point(data = model_output, aes(x = date, y = mean_sc, color = 'mean_sc')) +
+  geom_line(data = model_output, aes(x = date, y = model_output_action_2080, color = 'some_action_2080')) +
+  geom_line(data = model_output, aes(x = date, y = model_output_no_action_2080, color = 'no_action_2080')) +
   xlab('Date') +
   ylab('SC Value')+
   ggtitle('Predicting SC Using PBEM')+
@@ -227,14 +223,16 @@ ggplot()+
 
 ```{r}
 
-drill_down <- risq_attempt %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
+
+drill_down <- model_output %>% filter(date >= '1995-01-01' & date <= '1997-09-01')
 
 ggplot()+
-  geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_line(data = drill_down, aes(x = date, y = model_output, color = 'pbem_model')) +
+  geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'actual_sc')) +
+  #geom_line(data = drill_down, aes(x = date, y = model_output_no_action_2080, color = 'no_action_2080')) +
+  geom_line(data = drill_down, aes(x = date, y = model_output_nosl, color = 'no sea level rise')) +
   xlab('Date') +
   ylab('SC Value')+
-  ggtitle('Predicting SC Using PBEM -- Copied Meyer Water Levels')+
+  ggtitle('Predicting SC Using PBEM : 1995 - 1997\n Ten Feet of Rise')+
   theme(axis.text.x = element_text(angle = 90))
 
 ```
@@ -257,6 +255,13 @@ ggplot()+
   theme(axis.text.x = element_text(angle = 90))
 ```
 
+```{r}
+#write.csv(risq_attempt, '../data/processed/predictions_no_sl_rise.csv')
+#write.csv(risq_attempt_12, '../data/processed/predictions_1ft_rise.csv')
+#write.csv(risq_attempt_24, '../data/processed/predictions_2ft_rise.csv')
+#write.csv(risq_attempt_36, '../data/processed/predictions_3ft_rise.csv')
 
+write.csv(model_output, '../data/processed/model_output.csv')
+```
 
 

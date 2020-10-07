@@ -1,0 +1,105 @@
+---
+title: "Phase 3"
+output: pdf_document
+---
+```{r}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+```
+
+
+```{r}
+preds = fread('../data/processed/model_output.csv')
+preds$date = as.Date(preds$date)
+sc_map = fread('../data/raw/spc_chl_table.csv')
+
+# do a linear interpolation to convert our sc's into chlorinity
+new_chlorinity <- approx(sc_map$Cond, sc_map$Chlor, preds$mean_sc)$y
+preds$actual_chlorinity = new_chlorinity
+preds[, actual_chlorinity := ifelse(is.na(actual_chlorinity), 0, actual_chlorinity)]
+summary(preds$actual_chlorinity)
+```
+The raw data shows that this location observed actual chlorinity values between 0 - 271 across the 50 year period from 1964 - 2014.
+
+
+
+```{r}
+
+chlor_nosl <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_nosl)$y
+chlor_action_2040 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2040)$y
+chlor_action_2060 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2060)$y
+chlor_action_2080 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2080)$y
+chlor_no_action_2040 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2040)$y
+chlor_no_action_2060 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2060)$y
+chlor_no_action_2080 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2080)$y
+
+preds$chlor_nosl <- chlor_nosl
+preds$chlor_action_2040 <- chlor_action_2040
+preds$chlor_action_2060 <- chlor_action_2060
+preds$chlor_action_2080 <- chlor_action_2080
+preds$chlor_no_action_2040 <- chlor_no_action_2040
+preds$chlor_no_action_2060 <- chlor_no_action_2060
+preds$chlor_no_action_2080 <- chlor_no_action_2080
+
+preds[is.na(preds)] <- 0
+```
+
+
+```{r}
+preds[, year := year(date)]
+chlorinity_by_year =  preds %>% group_by(year) %>% summarise(avg_chlor = max(actual_chlorinity, na.rm = TRUE), 
+                                                             variation = var(actual_chlorinity, na.rm = TRUE),
+                                                             avg_chlor_no_action_2080 = max(chlor_no_action_2080, na.rm = TRUE),
+                                                             avg_chlor_action_2080 = max(chlor_action_2080, na.rm = TRUE),
+                                                             avg_chlor_no_action_2040 = max(chlor_no_action_2040, na.rm = TRUE),
+                                                             avg_chlor_action_2040 = max(chlor_action_2040, na.rm = TRUE),
+                                                             avg_chlor_no_action_2060 = max(chlor_no_action_2060, na.rm = TRUE),
+                                                             avg_chlor_action_2060 = max(chlor_action_2060, na.rm = TRUE))
+
+ggplot(chlorinity_by_year %>% filter(year >= 1966), aes(x = 'g : no action 2080', y = avg_chlor_no_action_2080))+
+  geom_boxplot()+
+  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'f: action 2080', y = avg_chlor_action_2080))+
+    geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'a: no sl rise', y = avg_chlor))+
+  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'b : action 2040', y = avg_chlor_action_2040))+
+  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'c : no action 2040', y = avg_chlor_no_action_2040))+
+  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'd : action 2060', y = avg_chlor_action_2060))+
+  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'e : no action 2060', y = avg_chlor_no_action_2060))+
+  ggtitle('Predicted Chlorinity Impact Under Various SL Rise Scenarios')+
+  ylab('Maximum Chlorinity')
+  
+```
+
+```{r}
+preds.small = preds %>% filter(date >= '2003-01-01' & date <= '2003-12-31')
+
+summary(preds.small$chlor_nosl)
+summary(preds.small$chlor_action_2040)
+summary(preds.small$chlor_no_action_2040)
+summary(preds.small$chlor_action_2060)
+summary(preds.small$chlor_no_action_2060)
+summary(preds.small$chlor_action_2080)
+summary(preds.small$chlor_no_action_2080)
+
+```
+
+
+
+
+
+```{r}
+
+
+snippet = preds %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
+
+ggplot(snippet, aes(x = date, y = chlor_nosl, color = 'no rise'))+
+  geom_point(size = .1)+
+  geom_point(data = snippet, aes(x = date, y = chlor_no_action_2080, color = 'no_action_2080'), size = .1)+
+  ggtitle('Comparing Model Output Under SL Rise Scenarios')+
+  scale_color_manual(values = c("#999999", "#E69F00"))
+
+
+#olorBlindGrey8   <- c("#999999", "#E69F00", "#56B4E9", "#009E73", 
+ #                      "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+```
