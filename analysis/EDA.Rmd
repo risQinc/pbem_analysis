@@ -176,7 +176,7 @@ ts_dr_flows = ts_dr_flows %>% mutate(river = 'delaware')
 flows = rbind(ts_sr_flows, ts_dr_flows)
 
 
-ggplot(dr_clean, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
+ggplot(flows, aes(x = month, y = avg_inflow*0.0283168, fill = river))+
   geom_bar(stat = 'identity', position = 'dodge')+
   ylim(0,600)+
  #ggtitle('Average of Monthly Flows, 1965 to 1966 & 1998 - 1999')
@@ -308,6 +308,21 @@ Jane's Form Training Data
 training_data = merge(inflows, sc, all.y = TRUE)
 training_data = merge(training_data, extended_reedy[, c('date', 'reedy_sl')], by = 'date', all.x = TRUE)
 head(training_data)
+```
+
+Explore correlations
+```{r}
+#library(corrplot)
+#training_data[, month := month(date)]
+reedy = training_data %>% filter(location == 'reedy') %>% select( 'mean_sc', 'reedy_sl', 'month')
+bfb = training_data %>% filter(location == 'del_bfb') %>% select( 'mean_sc', 'reedy_sl', 'month', 'inflow')
+reedy = na.omit(reedy)
+bfb = na.omit(bfb)
+reedy.cor = cor(reedy)
+bfb = cor(bfb)
+corrplot(df.cor)
+cor(reedy$mean_sc, reedy$reedy_sl)
+cor(bfb$mean_sc, bfb$reedy_sl)
 ```
 
 

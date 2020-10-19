@@ -160,37 +160,20 @@ final_output <- input_data %>% mutate(nosl_10d = output_df$V1,
 Finally, add the logic to predict capital K depending on the relationship between q and Q
 
 ```{r}
-# ql_t <= Q1      -> k_st (maybe authors have this swapped?)
-# ql_t >= Q2      -> k_lt (maybe authors have this swapped?)
-# Ql < qlt <= Q2 -> 
-#bf <- bf %>% mutate(K_hat = ifelse(q_lt <= Q1, k_lt, 
- #                           ifelse(q_lt >= Q2, k_st, k_st*(q_lt - Q1)/(Q2 - Q1) + k_lt*(Q2 - q_lt)/(Q2 - Q1))),
-  #                  inequality = ifelse(q_lt <= Q1, 'first', 
-   #                         ifelse(q_lt >= Q2, 'third', 'second')))
-
-
-
-#preds = c()
-#for (t in (1:nrow(input_data))){
-#  time_step = input_data[t]
-#  p = time_step$model_10d*max(0, min(1, (time_step$q_lt - thresh_30)/ 700)) + time_step$model_30d*min(1, max(0, (thresh_10 - time_step$q_lt)/700))
-#  preds = append(preds, p)
-#}
 
 final_output <- final_output %>% 
                 select(date, q_lt, nosl_10d, nosl_30d, action_2040_10d, action_2040_30d, action_2060_10d, action_2060_30d, action_2080_10d, action_2080_30d, no_action_2040_10d, no_action_2040_30d, no_action_2060_10d, no_action_2060_30d, no_action_2080_10d, no_action_2080_30d) %>%
                 group_by(date) %>%
-                mutate(model_output_nosl = nosl_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + nosl_30d*min(1, max(0, (thresh_10 - q_lt)/700)),   
-                       model_output_action_2040 = action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
-                       model_output_action_2060 = action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
-                       model_output_action_2080 = action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
-                       model_output_no_action_2040 = no_action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
-                       model_output_no_action_2060 = no_action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
-                       model_output_no_action_2080 = no_action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                mutate(nosl = nosl_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + nosl_30d*min(1, max(0, (thresh_10 - q_lt)/700)),   
+                       act_2040 = action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       act_2060 = action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       act_2080 = action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       no_act_2040 = no_action_2040_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2040_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       no_act_2060 = no_action_2060_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2060_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
+                       no_act_2080 = no_action_2080_10d*max(0, min(1, (q_lt - thresh_30)/ 700)) + no_action_2080_30d*min(1, max(0, (thresh_10 - q_lt)/700)),
                        ) %>%
   ungroup()
 
-#final_output$model_output = preds
 
 ```
 
@@ -200,7 +183,7 @@ Cross validate K_hat (predicted SC value) with mean_sc (actual SC values)
 bfb$date = as.Date(bfb$date)
 model_outputs = 
 
-model_output = merge(final_output[, c('date', 'q_lt', 'model_output_nosl', 'model_output_action_2040', 'model_output_action_2060', 'model_output_action_2080', 'model_output_no_action_2040', 'model_output_no_action_2060', 'model_output_no_action_2080')], bfb[, c('date', 'mean_sc')])
+model_output = merge(final_output[, c('date', 'q_lt', 'nosl', 'act_2040', 'act_2060', 'act_2080', 'no_act_2040', 'no_act_2060', 'no_act_2080')], bfb[, c('date', 'mean_sc')])
 ```
 
 
@@ -211,8 +194,8 @@ library(ggplot2)
 
 ggplot()+
   geom_point(data = model_output, aes(x = date, y = mean_sc, color = 'mean_sc')) +
-  geom_line(data = model_output, aes(x = date, y = model_output_action_2080, color = 'some_action_2080')) +
-  geom_line(data = model_output, aes(x = date, y = model_output_no_action_2080, color = 'no_action_2080')) +
+  geom_line(data = model_output, aes(x = date, y = act_2080, color = 'some_action_2080')) +
+  geom_line(data = model_output, aes(x = date, y = no_act_2080, color = 'no_action_2080')) +
   xlab('Date') +
   ylab('SC Value')+
   ggtitle('Predicting SC Using PBEM')+
@@ -229,7 +212,7 @@ drill_down <- model_output %>% filter(date >= '1995-01-01' & date <= '1997-09-01
 ggplot()+
   geom_point(data = drill_down, aes(x = date, y = mean_sc, color = 'actual_sc')) +
   #geom_line(data = drill_down, aes(x = date, y = model_output_no_action_2080, color = 'no_action_2080')) +
-  geom_line(data = drill_down, aes(x = date, y = model_output_nosl, color = 'no sea level rise')) +
+  geom_line(data = drill_down, aes(x = date, y = nosl, color = 'no sea level rise')) +
   xlab('Date') +
   ylab('SC Value')+
   ggtitle('Predicting SC Using PBEM : 1995 - 1997\n Ten Feet of Rise')+
