@@ -12,78 +12,119 @@ library(dplyr)
 ```{r}
 preds = fread('../data/processed/model_output.csv')
 preds$date = as.Date(preds$date)
-sc_map = fread('../data/raw/spc_chl_table.csv')
 
-# do a linear interpolation to convert our sc's into chlorinity
-new_chlorinity <- approx(sc_map$Cond, sc_map$Chlor, preds$mean_sc)$y
-preds$actual_chlorinity = new_chlorinity
-preds[, actual_chlorinity := ifelse(is.na(actual_chlorinity), 0, actual_chlorinity)]
-summary(preds$actual_chlorinity)
+
+summary(preds$mean_sc)
+summary(preds$nosl)
 ```
-The raw data shows that this location observed actual chlorinity values between 0 - 271 across the 50 year period from 1964 - 2014.
-
+The raw data shows that this location observed actual SC values between 76 - 1190 across the 50 year period from 1964 - 2014. However the model output slightly underpredicts this range at between 130 and 984. To correct for this, we will incorporate model "innovation ratios." We will compute these ratios using actual SC values and predicted SC values under the assumption of no sea level rise. We will then apply those same ratios to various possible scenarios of sea level rise.
 
 
 ```{r}
+inno = preds %>% select('date', 'mean_sc', 'nosl')
+inno = inno %>% mutate(I = nosl / mean_sc,
+                       I_1 = lag(I, n = 1),
+                       I_2 = lag(I, n = 2),
+                       I_3 = lag(I, n = 3))
+inno = na.omit(inno)
 
-chlor_nosl <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_nosl)$y
-chlor_action_2040 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2040)$y
-chlor_action_2060 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2060)$y
-chlor_action_2080 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_action_2080)$y
-chlor_no_action_2040 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2040)$y
-chlor_no_action_2060 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2060)$y
-chlor_no_action_2080 <- approx(sc_map$Cond, sc_map$Chlor, preds$model_output_no_action_2080)$y
-
-preds$chlor_nosl <- chlor_nosl
-preds$chlor_action_2040 <- chlor_action_2040
-preds$chlor_action_2060 <- chlor_action_2060
-preds$chlor_action_2080 <- chlor_action_2080
-preds$chlor_no_action_2040 <- chlor_no_action_2040
-preds$chlor_no_action_2060 <- chlor_no_action_2060
-preds$chlor_no_action_2080 <- chlor_no_action_2080
-
-preds[is.na(preds)] <- 0
 ```
 
+```{r}
+
+mod <- lm(log(I) ~ log(I_1) + log(I_2) + log(I_3), data = inno)
+
+b0 <- mod$coefficients[1]
+b1 <- mod$coefficients[2]
+b2 <- mod$coefficients[3]
+b3 <- mod$coefficients[4]
+
+
+
+inno = inno %>% mutate(b0 = b0,
+                       b1 = b1,
+                       b2 = b2,
+                       b3 = b3)
+
+# make predictions for I
+I_predict <- exp(predict(mod, newdata = inno[, c('I_1', 'I_2', 'I_3')] ))
+
+inno = inno %>% mutate(I_hat = I_predict,
+                       #I_hat2 = exp(b0)*I_1^b1*I_2^b2*I_3^b3, (gives the same output as using "predict")
+                       corrected_output = nosl / I_hat)
+```
 
 ```{r}
-preds[, year := year(date)]
-chlorinity_by_year =  preds %>% group_by(year) %>% summarise(avg_chlor = max(actual_chlorinity, na.rm = TRUE), 
-                                                             variation = var(actual_chlorinity, na.rm = TRUE),
-                                                             avg_chlor_no_action_2080 = max(chlor_no_action_2080, na.rm = TRUE),
-                                                             avg_chlor_action_2080 = max(chlor_action_2080, na.rm = TRUE),
-                                                             avg_chlor_no_action_2040 = max(chlor_no_action_2040, na.rm = TRUE),
-                                                             avg_chlor_action_2040 = max(chlor_action_2040, na.rm = TRUE),
-                                                             avg_chlor_no_action_2060 = max(chlor_no_action_2060, na.rm = TRUE),
-                                                             avg_chlor_action_2060 = max(chlor_action_2060, na.rm = TRUE))
+ggplot(inno, aes(I, I_hat-I, color = 'model residuals'))+
+  geom_point(size = .5)
 
-ggplot(chlorinity_by_year %>% filter(year >= 1966), aes(x = 'g : no action 2080', y = avg_chlor_no_action_2080))+
-  geom_boxplot()+
-  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'f: action 2080', y = avg_chlor_action_2080))+
-    geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'a: no sl rise', y = avg_chlor))+
-  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'b : action 2040', y = avg_chlor_action_2040))+
-  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'c : no action 2040', y = avg_chlor_no_action_2040))+
-  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'd : action 2060', y = avg_chlor_action_2060))+
-  geom_boxplot(data = chlorinity_by_year %>% filter(year >= 1966), aes(x = 'e : no action 2060', y = avg_chlor_no_action_2060))+
-  ggtitle('Predicted Chlorinity Impact Under Various SL Rise Scenarios')+
-  ylab('Maximum Chlorinity')
+```
+
+```{r}
+inno = inno %>% select('date', 'I_hat')
+preds_corr = merge(preds, inno)
+
+```
+
+```{r}
+subset = preds_corr[date >= '1997-11-01' & date <= '1999-11-30']
+
+
+ggplot(subset, aes(x = date, y = no_act_2060 / I_hat, color = 'Predicted SC, No Climate Action 2060'))+
+    geom_point(size = .4)+
   
+  geom_point(data = subset, aes(y = nosl / I_hat, color = 'Predicted Historical SC'), size = .4)+
+  
+  geom_point(data = subset, aes(y = mean_sc, color = 'Historical SC'), size = .4)+
+  geom_smooth(aes(y = no_act_2060 / I_hat, method = 'loess'), alpha = .2, size = .2, colour = "#56B4E9") + 
+  geom_smooth(aes(y = nosl / I_hat, method = 'loess'), alpha = .2, size = .3, colour = "#CC79A7") + 
+  geom_smooth(aes(y = mean_sc, method = 'loess'), alpha = .2, size = .2, colour = '#000000') + 
+  ggtitle('PBEM Model Output,\nComparing No SL vs 2ft Rise By 2060 (No Climate Action)\nTime Period: 1997 - 1999')+
+  scale_color_manual(values = c("#000000", "#CC79A7",  '#56B4E9' ))+
+  ylab('Specific Conductance')
 ```
 
 ```{r}
-preds.small = preds %>% filter(date >= '2003-01-01' & date <= '2003-12-31')
+preds_corr <- preds_corr %>% mutate(diff = no_act_2060 - mean_sc,
+                                    year = year(date))
 
-summary(preds.small$chlor_nosl)
-summary(preds.small$chlor_action_2040)
-summary(preds.small$chlor_no_action_2040)
-summary(preds.small$chlor_action_2060)
-summary(preds.small$chlor_no_action_2060)
-summary(preds.small$chlor_action_2080)
-summary(preds.small$chlor_no_action_2080)
-
+diffs = preds_corr %>% group_by(year) %>%
+  summarise(avg_diff = mean(diff))
 ```
 
 
+```{r}
+nosl = as.data.table(as.vector(summary(preds_corr$nosl / preds_corr$I_hat)))
+act_2040 = as.data.table(as.vector(summary(preds_corr$act_2040 / preds_corr$I_hat)))
+act_2060 = as.data.table(as.vector(summary(preds_corr$act_2060 / preds_corr$I_hat)))
+act_2080 = as.data.table(as.vector(summary(preds_corr$act_2080 / preds_corr$I_hat)))
+no_act_2040 = as.data.table(as.vector(summary(preds_corr$no_act_2040 / preds_corr$I_hat)))
+no_act_2060 = as.data.table(as.vector(summary(preds_corr$no_act_2060 / preds_corr$I_hat)))
+no_act_2080 = as.data.table(as.vector(summary(preds_corr$no_act_2080 / preds_corr$I_hat)))
+
+metrics = c('min', 'q1', 'median', 'mean', 'q3', 'max')
+
+summary_df = cbind(nosl, act_2040, act_2060, act_2080, no_act_2040,no_act_2060,no_act_2080, metrics)
+colnames(summary_df) <- c("Historical Prediction", "Climate Action 2040", 'Climate Action 2060', 'Climate Action 2080',
+                          'No Climate Action 2040', 'No Climate Action 2060', 'No Climate Action 2080', 'Metrics')
+write.csv(summary_df, '../data/processed/summary_table.csv')
+#summary(preds_corr$no_act_2040 / preds_corr$I_hat)
+#summary(preds_corr$act_2060 / preds_corr$I_hat)
+#summary(preds_corr$no_act_2060 / preds_corr$I_hat)
+#summary(preds_corr$act_2080 / preds_corr$I_hat)
+#summary(preds_corr$no_act_2080 / preds_corr$I_hat)
+```
+
+# of Days Above Threshold:
+```{r}
+nrow(preds_corr[nosl / I_hat > 1000])
+nrow(preds_corr[act_2040 / I_hat > 1000])
+nrow(preds_corr[act_2060 / I_hat > 1000])
+nrow(preds_corr[act_2080 / I_hat > 1000])
+nrow(preds_corr[no_act_2040 / I_hat > 1000])
+nrow(preds_corr[no_act_2060 / I_hat > 1000])
+nrow(preds_corr[no_act_2080 / I_hat > 1000])
+```
 
 
 
@@ -92,11 +133,12 @@ summary(preds.small$chlor_no_action_2080)
 
 snippet = preds %>% filter(date >= '1997-01-01' & date <= '1999-09-01')
 
-ggplot(snippet, aes(x = date, y = chlor_nosl, color = 'no rise'))+
-  geom_point(size = .1)+
-  geom_point(data = snippet, aes(x = date, y = chlor_no_action_2080, color = 'no_action_2080'), size = .1)+
+ggplot(snippet, aes(x = date, y = mean_sc, color = 'no rise'))+
+  geom_point(size = .3)+
+  geom_point(data = snippet, aes(x = date, y = model_output_no_action_2080, color = 'no_action_2080'), size = .1, shape = 19)+
+  geom_point(data = snippet, aes(x = date, y = model_output_nosl, color = 'model output no rise'), size = .1, shape = 19)+
   ggtitle('Comparing Model Output Under SL Rise Scenarios')+
-  scale_color_manual(values = c("#999999", "#E69F00"))
+  scale_color_manual(values = c("#56B4E9", "#D55E00", "009E73"))
 
 
 #olorBlindGrey8   <- c("#999999", "#E69F00", "#56B4E9", "#009E73", 
