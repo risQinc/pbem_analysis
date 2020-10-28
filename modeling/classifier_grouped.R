@@ -134,7 +134,8 @@ table(bfb_ctrl_10)
 bfb = test %>% filter(location == 'del_bfb')
 confusionMatrix(bfb_ctrl_10, bfb$problem_year_10)
 
-#CHESTER CTRL 10: 24 fresh, 7 salty, 94% overall accuracy, 86% positive accuracy (weak trust factor)
+#CHESTER CTRL 10: predicted 19 fresh, 5 salty, compared to 21 fresh and 3 salty (actual)
+# 92% overall accuracy, 60% positive accuracy (weak trust factor)
 probsTest <- predict(model_caret_10, test %>% filter(location == 'schu_chester'), type = "prob")
 threshold <- 0.4
 chester_ctrl_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
@@ -207,9 +208,9 @@ bfb_var_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh"
 table(bfb_var_10)
 
 
-#CHESTER VAR 10: 77 fresh, 21 salty BECOMES  53 fresh, 42 salty -> 100% increase in number of years with 10+ salty days
+#CHESTER VAR 10: 77 fresh, 21 salty BECOMES  55 fresh, 43 salty -> 100% increase in number of years with 10+ salty days
 probsTest <- predict(final_mod, selected_vars2 %>% filter(location == 'schu_chester'), type = "prob")
-threshold <- 0.3
+threshold <- 0.4
 chester_var_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
 table(chester_var_10)
 
@@ -217,7 +218,7 @@ chester_df = as.data.table(selected_vars2 %>% filter(location == 'schu_chester')
 chester_df$predicted_salty = probsTest$salty
 chester_df[, prediction := ifelse(predicted_salty > .3, 1, 0)]
 
-over = chester_df[prediction == 1]
+
 
 length(unique(over$year))
 

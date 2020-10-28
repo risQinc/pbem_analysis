@@ -1,0 +1,312 @@
+---
+title: "Classifier Prototype"
+output: pdf_document
+---
+
+```{r}
+library(data.table)
+library(dplyr)
+library(caret)
+library(ggplot2)
+```
+
+In this file we examine the potential for developing a generalized classification model capable of detecting, on a yes/no basis, whether a particular location will be at a future risk of drinking water salinization. To introduce the concept of our proposed model, we will define positive risk as any 6 month period in which there are more than 10 days in which measured river salinity exceeds 1120 ml/L (the safe drinking water threshold).
+
+
+#1. DATA PREPARATION
+
+First we read in the raw data values
+```{r}
+df = fread('../data/processed/training_data.csv')
+df = df[!is.na(df$mean_sc),]
+df = df[!is.na(df$reedy_sl),]
+df$date = as.Date(df$date)
+
+
+df <- df %>% filter(location != 'reedy') %>%
+            mutate(inflow = inflow/0.0283168,
+                    above_1000 = ifelse(mean_sc > 1120, 1, 0),
+                    year = year(date),
+                    month = month(date),
+                   adjusted_sl := reedy_sl + 23.5,
+                   ratio = reedy_sl / inflow,
+                   rise_ratio = adjusted_sl / inflow)
+                  
+df = as.data.table(df)
+head(df)
+```
+
+
+We can see from the below plot that salinity problems almost always occur during the second half of the year.
+
+```{r}
+distribution_of_issues = df %>% group_by(month) %>% summarise(high_salt_days = sum(above_1000))
+ggplot(distribution_of_issues, aes(month, high_salt_days))+ 
+  geom_bar(stat = 'identity', position = 'dodge')+
+  ggtitle('Count of Days Where Measured Specific Conductivity (Salinity)\n Exceeds The Safe Drinking Water Threshold')
+```
+
+Notice that we created a new variable called "adjusted_sl" which is equal to the raw sea level values, inflated by 2 feet. We can visualize this difference as follows:
+
+```{r}
+# visualize adjusted sea levels
+ggplot(df, aes(x = date, y = reedy_sl))+
+  geom_point(size = .1)+
+  geom_point(aes(y = adjusted_sl, color = 'adjusted_sl'), size = .1)
+```
+
+These adjusted sea level values will serve as the "synthetic future data" that we will in our attempt to quantify the likely change in drinking water salinity problems under the assumption of 2 feet of sea level rise by 2060 (relative to the year 2000).
+
+```{r}
+summary(df$inflow)
+```
+
+Based on the Median = 3800 and Q3 value = 8300, we will define the thresholds for "low" , "medium" and "high" flows as follow:
+
+```{r}
+# thresholds obtained via summary stats
+df[, inflow_type := ifelse(inflow < 3800, 'low_flow', 
+                                ifelse( (inflow >= 3800 & inflow < 8300), 'med_flow', 'high_flow'))]
+df[, very_low_flow := ifelse(inflow_type == 'low_flow', 1, 0)]
+df[, low_flow := ifelse(inflow_type == 'med_flow', 1, 0)]
+df[, high_flow := ifelse(inflow_type == 'high_flow', 1, 0)]
+head(df[, c('date', 'location', 'inflow', 'very_low_flow', 'low_flow', 'high_flow')])
+```
+
+
+Next we will aggregate the data by location, year, and "half" -- where each "half" corresponds to either the January to June (1) or July to December.
+
+```{r}
+agged_df <- df[, c('inflow', 'mean_sc', 'reedy_sl', 'above_1000', 'location',
+                          'year', 'month', 'ratio', 'very_low_flow', 'low_flow', 'high_flow')] %>%
+  group_by(year, month, location) %>%
+  summarise(bad_sc_days = sum(above_1000),
+            high_flow = sum(high_flow),
+            low_flow = sum(low_flow),
+            very_low_flow = sum(very_low_flow),
+            avg_ratio = mean(ratio),
+            max_ratio = max(ratio),
+            min_ratio = min(ratio),
+            problem_month = ifelse(bad_sc_days >= 3, 'salty', 'fresh'))
+head(agged_df)
+```
+
+# Examine Correlations Between Variables
+
+```{r}
+library(corrplot)
+corr_mat = cor(agged_df[, c('bad_sc_days', 'high_flow', 'low_flow', 'very_low_flow', 'avg_ratio', 'min_ratio', 'max_ratio')])
+corrplot(corr_mat)
+```
+Focusing on correlations with "bad_sc_days" we can see that low flows seem to be positively correlated with the number of problematic salinity days. This does not intuitively make sense with what we know about river dynamcis (as flows decrease, sea water is better able to creep further inland which results in higher measured salinity and therefore greater salinity risk). For this reason, we will not include the "low_flow" variable into the model. 
+
+# Subset the data to only ones needed for modeling
+
+```{r}
+selected_vars = agged_df[, c('problem_month', 'high_flow', 'very_low_flow', 'avg_ratio', 'max_ratio', 'min_ratio', 'month', 'year', 'location')]
+selected_vars$problem_month = as.factor(selected_vars$problem_month)
+```
+
+
+Create a grid for training a classifier with multiple possible parameters
+```{r}
+# my tuneGrid object:
+tgrid <- expand.grid(
+  mtry = c(1,2,3,4,5),
+  splitrule = c("gini"),
+  min.node.size = c(1, 2,3,4)
+)
+```
+
+
+Partition the data into train and test sets
+```{r}
+#years = unique(selected_vars$year)
+#train_years = sample(years, size = .75*length(years))
+#test_years = setdiff(years, train_years)
+#train <- selected_vars[selected_vars$year %in% train_years,]
+#test  <- selected_vars[selected_vars$year %in% test_years,]
+
+train <- selected_vars %>% filter(year < 2000) # 70% for training
+test <- selected_vars %>% filter(year >= 2000) # 30% for testing
+nrow(test) / nrow(selected_vars)
+
+```
+
+
+Train the model on the training data before 2005
+
+```{r}
+model_caret_10 <- train(problem_month ~ very_low_flow + avg_ratio+ max_ratio + min_ratio + high_flow,
+                     data = train,
+                     method = "ranger",
+                     trControl = trainControl(method="cv", number = 5, verboseIter = T, classProbs = T),
+                     tuneGrid = tgrid,
+                     importance = 'impurity' #permutation
+)
+
+plot(varImp(model_caret_10))
+```
+
+
+
+# TEST MODELS ON HOLDOUT DATA -
+If we see high accuracy on the holdout, then results indicate the model can be used reliably to predict on new data.
+
+
+```{r}
+bfb_test = test %>% filter(location == 'del_bfb')
+
+probsTest <- predict(model_caret_10, bfb_test, type = "prob")
+threshold <- 0.3
+bfb_ctrl_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
+table(bfb_ctrl_10)
+confusionMatrix(bfb_ctrl_10, bfb_test$problem_month)
+```
+
+```{r}
+#CHESTER CTRL 10: predicted 19 fresh, 5 salty, compared to 21 fresh and 3 salty (actual)
+# 92% overall accuracy, 60% positive accuracy (weak trust factor)
+chester_test = test %>% filter(location == 'schu_chester')
+probsTest <- predict(model_caret_10, chester_test, type = "prob")
+threshold <- 0.3
+chester_ctrl_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
+table(chester_ctrl_10)
+table(chester_test$problem_month)
+confusionMatrix(chester_ctrl_10, chester_test$problem_month)
+```
+```{r}
+
+y <- chester_test$problem_month
+predictions <- chester_ctrl_10 
+
+precision <- posPredValue(predictions, y, positive="salty")
+recall <- sensitivity(predictions, y, positive="salty")
+
+F1 <- (2 * precision * recall) / (precision + recall)
+precision
+recall
+F1
+```
+
+```{r}
+library(ROCR)
+## Loading required package: gplots
+## 
+## Attaching package: 'gplots'
+## The following object is masked from 'package:stats':
+## 
+##     lowess
+# plot a ROC curve for a single prediction run
+# and color the curve according to cutoff.
+probsTest <- as.vector(predict(model_caret_10, test, type = "prob"))
+threshold <- 0.3
+preds  <- as.vector(factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh")))
+
+
+pred <- prediction(probsTest$salty, test$problem_month)
+perf <- performance(pred,"tpr","fpr")
+plot(perf,colorize=TRUE)
+#plot(roc(response = y, predictor = probsTest$salty))
+
+```
+
+```{r}
+auc(test$problem_month, probsTest$salty)
+```
+
+# Summary of Validation Results:
+The raw data is highly imbalanced, with roughly 4% of months having 10 or more days with observed SC exceeding the safe threshold.
+```{r}
+table(selected_vars$problem_month)
+table(train$problem_month)
+table(test$problem_month)
+```
+
+As such, the baseline model we have is much more accurate when it predicts a "safe" -- or non-problematic result. This is evident in that the model correctly predicts all data in the test data set at Ben Franklin Bridge, where there were no historical months with 10 or more days above the threshold. At Chester, the model correctly predicts 91 out of 94 (97%) months with safe, or fresh, salinity data. It correctly predicts only 1 out of 4 salty days.
+
+## RETRAIN ON FULL HISTORICAL DATA 
+
+```{r}
+tgrid <- expand.grid(
+  mtry = 4,
+  splitrule = c("gini"),
+  min.node.size = c(2)
+)
+
+final_mod <- train(problem_month ~ high_flow  + very_low_flow+ avg_ratio+ max_ratio + min_ratio,
+                        data = selected_vars,
+                        method = "ranger",
+                        trControl = trainControl(method="cv", number = 5, verboseIter = T, classProbs = T),
+                        tuneGrid = tgrid,
+                        importance = 'impurity' #permutation
+)
+
+
+plot(varImp(final_mod))
+
+```
+
+
+
+# ADJUST DATA TO INCLUDE SL RISE (MAKING SYNTHETIC "FUTURE" DATA)
+
+```{r}
+agged_df2 <- as.data.table(df[, c('inflow', 'mean_sc', 'adjusted_sl', 'above_1000', 'location',
+                           'year', 'month', 'rise_ratio', 'very_low_flow', 'low_flow', 'high_flow')] %>%
+                             group_by(year, month, location) %>%
+                             summarise(bad_sc_days = sum(above_1000),
+                                       high_flow = sum(high_flow),
+                                       low_flow = sum(low_flow),
+                                       very_low_flow = sum(very_low_flow),
+                                       avg_ratio = mean(rise_ratio),
+                                       max_ratio = max(rise_ratio),
+                                       min_ratio = min(rise_ratio),
+                                       problem_month = ifelse(bad_sc_days >= 10, 'salty', 'fresh')), .groups = 'keep') 
+
+agged_df2$problem_month = as.factor(agged_df2$problem_month)
+selected_vars2 = agged_df2[, c('problem_month', 'high_flow', 'very_low_flow', 'avg_ratio', 'max_ratio', 'min_ratio', 'month', 'year', 'location')]
+```
+
+
+# historically, chester had 21 years with predicted 10 or more days above threshold
+# historically, bfb had 0 years with predicted 10 or more days above threshold
+```{r}
+agged_df %>% group_by(location) %>% summarise(salty_days = sum(ifelse(problem_month == 'fresh', 1, 0)))
+```
+# use the trained model to predict on all of the synthetic future data
+
+```{r}
+#BFB VAR 10: 98 fresh predictions -> no change due to SL rise
+probsTest <- predict(final_mod, selected_vars2 %>% filter(location == 'del_bfb'), type = "prob")
+threshold <- 0.3
+bfb_var_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
+table(bfb_var_10)
+```
+
+```{r}
+#CHESTER VAR 10: 77 fresh, 21 salty BECOMES  55 fresh, 43 salty -> 100% increase in number of years with 10+ salty days
+probsTest <- predict(final_mod, selected_vars2 %>% filter(location == 'schu_chester'), type = "prob")
+threshold <- 0.3
+chester_var_10  <- factor( ifelse(probsTest[, "salty"] > threshold, "salty", "fresh") )
+table(chester_var_10)
+
+chester_df = as.data.table(selected_vars2 %>% filter(location == 'schu_chester'))
+chester_df$predicted_salty = probsTest$salty
+chester_df[, prediction := ifelse(predicted_salty > .3, 1, 0)]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
